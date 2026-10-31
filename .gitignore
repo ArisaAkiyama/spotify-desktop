@@ -1,0 +1,37 @@
+# .NET / C# Build Artifacts
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Ll]og/
+[Ll]ogs/
+
+# Publish & Installer Output Directories
+[Pp]ublish/
+[Dd]ist/
+[Oo]utput/
+*.exe
+*.msi
+*.nupkg
+*.snupkg
+
+# Visual Studio / Rider / VS Code / OS Temp Files
+.vs/
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.lnk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# WebView2 Local User Data Cache
+*.WebView2/

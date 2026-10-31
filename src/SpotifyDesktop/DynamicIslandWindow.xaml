@@ -1,0 +1,299 @@
+<Window x:Class="SpotifyDesktop.DynamicIslandWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Spotify Dynamic Island"
+        Width="420"
+        Height="200"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="{x:Null}"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        UseLayoutRounding="False">
+
+    <Window.Resources>
+        <!-- iOS Media Transport Button Style with smooth hover & press bounce -->
+        <Style x:Key="IosControlBtnStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="BtnBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="18"
+                                Padding="{TemplateBinding Padding}"
+                                RenderTransformOrigin="0.5,0.5">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnBorder" Property="Background" Value="#22FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="BtnBorder" Property="Background" Value="#38FFFFFF" />
+                                <Setter TargetName="BtnBorder" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <ScaleTransform ScaleX="0.88" ScaleY="0.88" />
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <!-- Outer Transparent Host: 14px breathing room from top edge of monitor -->
+    <Grid Background="{x:Null}"
+          VerticalAlignment="Top"
+          HorizontalAlignment="Center"
+          Margin="0,14,0,0">
+
+        <!-- Unified Shared-Element Morphing Capsule -->
+        <Border x:Name="IslandPill"
+                Width="256"
+                Height="38"
+                CornerRadius="19"
+                Background="#000000"
+                BorderBrush="#26FFFFFF"
+                BorderThickness="1"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Top"
+                RenderTransformOrigin="0.5,0.0"
+                MouseEnter="OnIslandMouseEnter"
+                MouseLeave="OnIslandMouseLeave"
+                MouseLeftButtonDown="OnIslandMouseLeftButtonDown"
+                MouseMove="OnIslandMouseMove"
+                MouseLeftButtonUp="OnIslandMouseLeftButtonUp">
+            <Border.Clip>
+                <RectangleGeometry x:Name="IslandClipGeometry"
+                                   Rect="0,0,256,38"
+                                   RadiusX="19"
+                                   RadiusY="19" />
+            </Border.Clip>
+            <Border.RenderTransform>
+                <ScaleTransform x:Name="IslandScale" ScaleX="1" ScaleY="1" />
+            </Border.RenderTransform>
+
+            <!-- Unified Stage: stretches symmetrically with IslandPill (zero overflow shift) -->
+            <Grid x:Name="IslandStage"
+                  HorizontalAlignment="Stretch"
+                  VerticalAlignment="Stretch">
+
+                <!-- ========================================================= -->
+                <!-- SHARED ELEMENT 1: Single Morphing Album Art (24px -> 54px)-->
+                <!-- ========================================================= -->
+                <Border x:Name="SharedAlbumArtBorder"
+                        Width="24"
+                        Height="24"
+                        CornerRadius="7"
+                        Margin="11,7,0,0"
+                        HorizontalAlignment="Left"
+                        VerticalAlignment="Top"
+                        Background="#1C1C1E"
+                        Cursor="Hand"
+                        ToolTip="Click to open Spotify"
+                        MouseLeftButtonUp="OnAlbumArtClick">
+                    <Border.Clip>
+                        <RectangleGeometry x:Name="SharedAlbumArtClip"
+                                           Rect="0,0,24,24"
+                                           RadiusX="7"
+                                           RadiusY="7" />
+                    </Border.Clip>
+                    <Image x:Name="SharedAlbumArtImage"
+                           Stretch="UniformToFill"
+                           RenderOptions.BitmapScalingMode="HighQuality" />
+                </Border>
+
+                <!-- ========================================================= -->
+                <!-- SHARED ELEMENT 2: Single Morphing Track Title & Artist    -->
+                <!-- ========================================================= -->
+                <TextBlock x:Name="SharedTitleText"
+                           Text="Spotify"
+                           Foreground="#FFFFFF"
+                           FontFamily="Segoe UI, Yu Gothic UI, Malgun Gothic, Microsoft YaHei UI"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Top"
+                           Margin="46,10,56,0"
+                           TextTrimming="CharacterEllipsis"
+                           Cursor="Hand"
+                           MouseLeftButtonUp="OnAlbumArtClick" />
+
+                <TextBlock x:Name="SharedArtistText"
+                           Text="Ready to play music"
+                           Foreground="#98989F"
+                           FontFamily="Segoe UI, Yu Gothic UI, Malgun Gothic, Microsoft YaHei UI"
+                           FontSize="12"
+                           HorizontalAlignment="Stretch"
+                           VerticalAlignment="Top"
+                           Margin="46,26,56,0"
+                           Opacity="0"
+                           IsHitTestVisible="False"
+                           TextTrimming="CharacterEllipsis" />
+
+                <!-- ========================================================= -->
+                <!-- SHARED ELEMENT 3: Single Morphing 5-Bar Spotify Waveform  -->
+                <!-- ========================================================= -->
+                <StackPanel x:Name="SharedWaveformPanel"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top"
+                            Height="18"
+                            Margin="0,10,14,0"
+                            RenderTransformOrigin="1.0,0.5">
+                    <StackPanel.RenderTransform>
+                        <ScaleTransform x:Name="WaveformScale" ScaleX="1" ScaleY="1" />
+                    </StackPanel.RenderTransform>
+                    <Rectangle x:Name="WaveBar1" Width="2.5" Height="5" RadiusX="1.25" RadiusY="1.25" Fill="#1DB954" Margin="1.4,0" VerticalAlignment="Center" />
+                    <Rectangle x:Name="WaveBar2" Width="2.5" Height="11" RadiusX="1.25" RadiusY="1.25" Fill="#1ED760" Margin="1.4,0" VerticalAlignment="Center" />
+                    <Rectangle x:Name="WaveBar3" Width="2.5" Height="15" RadiusX="1.25" RadiusY="1.25" Fill="#3BE477" Margin="1.4,0" VerticalAlignment="Center" />
+                    <Rectangle x:Name="WaveBar4" Width="2.5" Height="9" RadiusX="1.25" RadiusY="1.25" Fill="#1ED760" Margin="1.4,0" VerticalAlignment="Center" />
+                    <Rectangle x:Name="WaveBar5" Width="2.5" Height="4" RadiusX="1.25" RadiusY="1.25" Fill="#1DB954" Margin="1.4,0" VerticalAlignment="Center" />
+                </StackPanel>
+
+                <!-- ========================================================= -->
+                <!-- SHARED ELEMENT 4: Bottom Drawer (Progress + Controls)     -->
+                <!-- ========================================================= -->
+                <Grid x:Name="BottomControlsPanel"
+                      HorizontalAlignment="Stretch"
+                      VerticalAlignment="Top"
+                      Margin="22,86,22,0"
+                      Opacity="0"
+                      Visibility="Collapsed"
+                      IsHitTestVisible="False"
+                      RenderTransformOrigin="0.5,0.0">
+                    <Grid.RenderTransform>
+                        <TransformGroup>
+                            <ScaleTransform x:Name="BottomControlsScale" ScaleX="0.92" ScaleY="0.92" />
+                            <TranslateTransform x:Name="BottomControlsTranslate" X="0" Y="-10" />
+                        </TransformGroup>
+                    </Grid.RenderTransform>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <!-- Row 0: Interactive iOS Capsule Progress Bar -->
+                    <Grid Grid.Row="0" Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="36" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="36" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock x:Name="CurrentTimeText"
+                                   Grid.Column="0"
+                                   Text="0:00"
+                                   Foreground="#8E8E93"
+                                   FontSize="11"
+                                   FontFamily="Segoe UI"
+                                   VerticalAlignment="Center" />
+
+                        <Grid x:Name="ProgressBarTrack"
+                              Grid.Column="1"
+                              Height="16"
+                              Margin="8,0"
+                              Background="Transparent"
+                              Cursor="Hand"
+                              MouseLeftButtonDown="OnProgressBarClick">
+                            <Border Height="5.5"
+                                    CornerRadius="2.75"
+                                    Background="#33FFFFFF"
+                                    VerticalAlignment="Center" />
+                            <Border x:Name="ProgressBarFill"
+                                    Height="5.5"
+                                    CornerRadius="2.75"
+                                    Background="#FFFFFF"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Center"
+                                    Width="0" />
+                        </Grid>
+
+                        <TextBlock x:Name="TotalTimeText"
+                                   Grid.Column="2"
+                                   Text="0:00"
+                                   Foreground="#8E8E93"
+                                   FontSize="11"
+                                   FontFamily="Segoe UI"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center" />
+                    </Grid>
+
+                    <!-- Row 1: iOS Media Transport Controls -->
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="34" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="34" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Center">
+                            <!-- Previous Track -->
+                            <Button Style="{StaticResource IosControlBtnStyle}"
+                                    Padding="11,7"
+                                    Margin="8,0"
+                                    ToolTip="Previous Track"
+                                    Click="OnPreviousClick">
+                                <Path Data="M 2,2 L 4,2 L 4,14 L 2,14 Z M 4.5,8 L 14,2 L 14,14 Z"
+                                      Fill="#FFFFFF"
+                                      Width="16"
+                                      Height="16" />
+                            </Button>
+
+                            <!-- Play / Pause -->
+                            <Button Style="{StaticResource IosControlBtnStyle}"
+                                    Padding="13,7"
+                                    Margin="14,0"
+                                    ToolTip="Play / Pause"
+                                    Click="OnPlayPauseClick">
+                                <Path x:Name="PlayPauseIconPath"
+                                      Data="M 3,1.5 L 15,8.5 L 3,15.5 Z"
+                                      Fill="#FFFFFF"
+                                      Width="18"
+                                      Height="18" />
+                            </Button>
+
+                            <!-- Next Track -->
+                            <Button Style="{StaticResource IosControlBtnStyle}"
+                                    Padding="11,7"
+                                    Margin="8,0"
+                                    ToolTip="Next Track"
+                                    Click="OnNextClick">
+                                <Path Data="M 12,2 L 14,2 L 14,14 L 12,14 Z M 11.5,8 L 2,2 L 2,14 Z"
+                                      Fill="#FFFFFF"
+                                      Width="16"
+                                      Height="16" />
+                            </Button>
+                        </StackPanel>
+
+                        <!-- Open Full App Window Button -->
+                        <Button Grid.Column="2"
+                                Style="{StaticResource IosControlBtnStyle}"
+                                Padding="8"
+                                ToolTip="Open Spotify"
+                                Click="OnOpenAppButtonClick">
+                            <Path Data="M 9,2 L 14,2 L 14,7 M 14,2 L 8,8 M 6,3 L 3,3 C 2.4,3 2,3.4 2,4 L 2,13 C 2,13.6 2.4,14 3,14 L 12,14 C 12.6,14 13,13.6 13,13 L 13,10"
+                                  Stroke="#98989F"
+                                  StrokeThickness="1.7"
+                                  StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round"
+                                  Width="16"
+                                  Height="16" />
+                        </Button>
+                    </Grid>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

@@ -1,0 +1,836 @@
+<Window x:Class="SpotifyDesktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Spotify"
+        Icon="pack://application:,,,/Assets/spotify.ico"
+        Width="1180"
+        Height="680"
+        MinWidth="820"
+        MinHeight="520"
+        WindowStartupLocation="Manual"
+        WindowState="Maximized"
+        Background="#000000"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        PreviewKeyDown="OnWindowPreviewKeyDown">
+
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="32"
+                            ResizeBorderThickness="6"
+                            GlassFrameThickness="1"
+                            CornerRadius="8"
+                            UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <Window.Resources>
+        <!-- Title Bar Caption Button Style -->
+        <Style x:Key="TitleBarCaptionBtnStyle" TargetType="Button">
+            <Setter Property="Width" Value="46" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#CCCCCC" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="BtnBg" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnBg" Property="Background" Value="#1E1E22" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="BtnBg" Property="Background" Value="#2A2A30" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Title Bar Close Button Style (Red Hover) -->
+        <Style x:Key="TitleBarCloseBtnStyle" TargetType="Button" BasedOn="{StaticResource TitleBarCaptionBtnStyle}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="BtnBg" Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="BtnBg" Property="Background" Value="#E81123" />
+                                <Setter Property="Foreground" Value="#FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="BtnBg" Property="Background" Value="#C50F1F" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Monochromatic Flat Slider Style (Pure White Thumb & Clean Track) -->
+        <Style x:Key="MonoSettingsSliderStyle" TargetType="Slider">
+            <Setter Property="Minimum" Value="0" />
+            <Setter Property="Maximum" Value="100" />
+            <Setter Property="IsMoveToPointEnabled" Value="True" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid VerticalAlignment="Center" Height="24" Background="Transparent">
+                            <Border Height="4"
+                                    CornerRadius="2"
+                                    Background="#2A2A32"
+                                    VerticalAlignment="Center" />
+                            <Track x:Name="PART_Track">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="Slider.DecreaseLarge" Opacity="0" IsHitTestVisible="False" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="Slider.IncreaseLarge" Opacity="0" IsHitTestVisible="False" />
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Width="16" Height="16">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Border Width="16"
+                                                        Height="16"
+                                                        CornerRadius="8"
+                                                        Background="#FFFFFF"
+                                                        BorderBrush="#111114"
+                                                        BorderThickness="2" />
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Monochromatic Preset Button Style -->
+        <Style x:Key="MonoPresetPillStyle" TargetType="Button">
+            <Setter Property="Background" Value="#17171C" />
+            <Setter Property="Foreground" Value="#8E8E98" />
+            <Setter Property="BorderBrush" Value="#25252C" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="16,8" />
+            <Setter Property="Margin" Value="0,0,10,0" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="PillBorder"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Full-Width Clickable Button (Transparent Host for Toggle Rows) -->
+        <Style x:Key="PlainClickableBtnStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Sidebar Navigation Button Style -->
+        <Style x:Key="MonoNavBtnStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="Margin" Value="0,0,0,3" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="6"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Monochromatic Device Selection Card Style -->
+        <Style x:Key="MonoDeviceCardBtnStyle" TargetType="Button">
+            <Setter Property="Width" Value="56" />
+            <Setter Property="Height" Value="38" />
+            <Setter Property="BorderThickness" Value="1.2" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="6">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="RootLayoutGrid" Background="#000000">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="32" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- ================================================================= -->
+        <!-- ROW 0: NATIVE TITLE BAR (#000000)                                 -->
+        <!-- ================================================================= -->
+        <Grid Grid.Row="0" Background="#000000">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Left: App Icon & Song / Page Title -->
+            <StackPanel Grid.Column="0"
+                        Orientation="Horizontal"
+                        VerticalAlignment="Center"
+                        Margin="12,0,12,0"
+                        IsHitTestVisible="False">
+                <Image Source="pack://application:,,,/Assets/spotify.ico"
+                       Width="16"
+                       Height="16"
+                       RenderOptions.BitmapScalingMode="HighQuality"
+                       VerticalAlignment="Center"
+                       Margin="0,0,8,0" />
+                <TextBlock x:Name="TitleBarTextBlock"
+                           Text="{Binding Title, RelativeSource={RelativeSource AncestorType=Window}}"
+                           Foreground="#D8D8DE"
+                           FontSize="12"
+                           FontFamily="Segoe UI, Yu Gothic UI, Malgun Gothic, Microsoft YaHei UI"
+                           TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+
+            <!-- Right: Settings Button (Left of Minimize) + Caption Buttons -->
+            <StackPanel Grid.Column="1"
+                        Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center">
+
+                <!-- Settings Button (Lucide settings.svg) -->
+                <Button x:Name="SettingsTitleBarButton"
+                        Style="{StaticResource TitleBarCaptionBtnStyle}"
+                        ToolTip="Settings"
+                        Click="OnSettingsButtonClick">
+                    <Grid Width="18" Height="18">
+                        <Viewbox Width="15" Height="15" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Canvas Width="24" Height="24">
+                                <Path Data="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.32-1.915z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.9"
+                                      StrokeStartLineCap="Round"
+                                      StrokeEndLineCap="Round"
+                                      StrokeLineJoin="Round" />
+                            </Canvas>
+                        </Viewbox>
+
+                        <!-- White Indicator Dot when Dolby Spatial Audio is active (Monochromatic) -->
+                        <Ellipse x:Name="DolbyHeaderIndicatorDot"
+                                 Width="6"
+                                 Height="6"
+                                 Fill="#FFFFFF"
+                                 Stroke="#141418"
+                                 StrokeThickness="1"
+                                 HorizontalAlignment="Right"
+                                 VerticalAlignment="Top"
+                                 Visibility="Collapsed" />
+                    </Grid>
+                </Button>
+
+                <!-- Minimize Button -->
+                <Button Style="{StaticResource TitleBarCaptionBtnStyle}"
+                        ToolTip="Minimize"
+                        Click="OnMinimizeButtonClick">
+                    <Path Data="M 0,5 L 10,5"
+                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                          StrokeThickness="1"
+                          Width="10"
+                          Height="10" />
+                </Button>
+
+                <!-- Maximize / Restore Button -->
+                <Button Style="{StaticResource TitleBarCaptionBtnStyle}"
+                        ToolTip="Maximize / Restore"
+                        Click="OnMaximizeRestoreButtonClick">
+                    <Path x:Name="MaxRestoreIconPath"
+                          Data="M 0.5,0.5 L 9.5,0.5 L 9.5,9.5 L 0.5,9.5 Z"
+                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                          StrokeThickness="1"
+                          Width="10"
+                          Height="10" />
+                </Button>
+
+                <!-- Close Button -->
+                <Button Style="{StaticResource TitleBarCloseBtnStyle}"
+                        ToolTip="Close to System Tray"
+                        Click="OnCloseCaptionButtonClick">
+                    <Path Data="M 0,0 L 10,10 M 10,0 L 0,10"
+                          Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                          StrokeThickness="1"
+                          Width="10"
+                          Height="10" />
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <!-- ================================================================= -->
+        <!-- ROW 1: CONTENT LAYER (WebView2 Player OR Full-Screen Settings)    -->
+        <!-- ================================================================= -->
+        <Grid Grid.Row="1">
+            <!-- 1. Authentic Spotify Web View (Zero UI modifications / Zero AI Slop) -->
+            <wv2:WebView2 x:Name="MusicWebView"
+                          DefaultBackgroundColor="#000000"
+                          HorizontalAlignment="Stretch"
+                          VerticalAlignment="Stretch" />
+
+            <!-- 2. Full-Screen Settings View (Pure Monochromatic Black & White) -->
+            <Grid x:Name="SettingsOverlayGrid"
+                  Background="#0E0E11"
+                  Visibility="Collapsed"
+                  Focusable="True">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="220" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <!-- ========================================================= -->
+                <!-- LEFT SIDEBAR: Clean, Minimalist                           -->
+                <!-- ========================================================= -->
+                <Border Grid.Column="0"
+                        Background="#121215"
+                        BorderBrush="#1B1B20"
+                        BorderThickness="0,0,1,0"
+                        Padding="14,18,14,18">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Top Header: "Settings" -->
+                        <TextBlock Grid.Row="0"
+                                   Text="Settings"
+                                   Foreground="#71717A"
+                                   FontSize="12"
+                                   FontWeight="SemiBold"
+                                   Margin="8,4,0,14" />
+
+                        <!-- Nav Items List -->
+                        <StackPanel Grid.Row="1">
+                            <!-- Nav 1: Audio & Dolby DSP -->
+                            <Button x:Name="NavBtnDolby"
+                                    Style="{StaticResource MonoNavBtnStyle}"
+                                    Background="#25252C"
+                                    Click="OnNavDolbyClick">
+                                <TextBlock x:Name="NavTxtDolby"
+                                           Text="Audio &amp; Dolby DSP"
+                                           Foreground="#FFFFFF"
+                                           FontSize="13"
+                                           FontWeight="Medium" />
+                            </Button>
+
+                            <!-- Nav 2: Dynamic Island -->
+                            <Button x:Name="NavBtnIsland"
+                                    Style="{StaticResource MonoNavBtnStyle}"
+                                    Background="Transparent"
+                                    Click="OnNavIslandClick">
+                                <TextBlock x:Name="NavTxtIsland"
+                                           Text="Dynamic Island"
+                                           Foreground="#9494A0"
+                                           FontSize="13"
+                                           FontWeight="Medium" />
+                            </Button>
+
+                            <!-- Nav 3: About -->
+                            <Button x:Name="NavBtnAbout"
+                                    Style="{StaticResource MonoNavBtnStyle}"
+                                    Background="Transparent"
+                                    Margin="0"
+                                    Click="OnNavAboutClick">
+                                <TextBlock x:Name="NavTxtAbout"
+                                           Text="About"
+                                           Foreground="#9494A0"
+                                           FontSize="13"
+                                           FontWeight="Medium" />
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- ========================================================= -->
+                <!-- RIGHT CONTENT PANE: Full-Width Stretch & Clean Hierarchy  -->
+                <!-- ========================================================= -->
+                <ScrollViewer Grid.Column="1"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <Grid HorizontalAlignment="Stretch"
+                          Margin="44,28,52,40">
+
+                        <!-- ================================================= -->
+                        <!-- TAB 1: AUDIO & DOLBY DSP CONTENT                  -->
+                        <!-- ================================================= -->
+                        <StackPanel x:Name="SettingsPanelDolby" Visibility="Visible">
+                            <!-- Header with Close Button ✕ -->
+                            <Grid Margin="0,0,0,24">
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="Audio &amp; Dolby DSP"
+                                               Foreground="#FFFFFF"
+                                               FontSize="20"
+                                               FontWeight="Bold" />
+                                    <TextBlock Text="Configure 3D soundstage, equalizer parameters, and speaker protection."
+                                               Foreground="#8A8A96"
+                                               FontSize="12.5"
+                                               Margin="0,3,0,0" />
+                                </StackPanel>
+
+                                <!-- Close Button ✕ -->
+                                <Button HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Width="28"
+                                        Height="28"
+                                        Cursor="Hand"
+                                        ToolTip="Close (Esc)"
+                                        Click="OnCloseSettingsButtonClick">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="CloseBg" Background="Transparent" CornerRadius="6">
+                                                <Path Data="M 0,0 L 8,8 M 8,0 L 0,8"
+                                                      Stroke="#8E8E98"
+                                                      StrokeThickness="1.5"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="CloseBg" Property="Background" Value="#222228" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+                            </Grid>
+
+                            <!-- Master Switch Row: Dolby Spatial Audio -->
+                            <Button Style="{StaticResource PlainClickableBtnStyle}"
+                                    Margin="0,0,0,20"
+                                    Click="OnDolbyMasterToggleClick">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                        <TextBlock Text="Dolby Spatial Audio"
+                                                   Foreground="#FFFFFF"
+                                                   FontSize="14"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock Text="Enhance playback with real-time 3D soundstage widening, custom equalization, and speaker protection."
+                                                   Foreground="#8E8E98"
+                                                   FontSize="12"
+                                                   Margin="0,4,0,0" />
+                                    </StackPanel>
+
+                                    <!-- Monochromatic Toggle Switch -->
+                                    <Border x:Name="DolbyToggleTrack"
+                                            Grid.Column="1"
+                                            Width="46"
+                                            Height="24"
+                                            CornerRadius="12"
+                                            Background="#FFFFFF"
+                                            VerticalAlignment="Center"
+                                            Padding="3">
+                                        <Ellipse x:Name="DolbyToggleThumb"
+                                                 Width="18"
+                                                 Height="18"
+                                                 Fill="#121215"
+                                                 HorizontalAlignment="Right" />
+                                    </Border>
+                                </Grid>
+                            </Button>
+
+                            <!-- Sub-Heading: Target Device -->
+                            <TextBlock Text="Target Device Optimization"
+                                       Foreground="#E2E2E8"
+                                       FontSize="13.5"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,4" />
+                            <TextBlock Text="Select your audio output so the equalizer applies appropriate frequency limits and acoustic models."
+                                       Foreground="#7A7A86"
+                                       FontSize="12"
+                                       Margin="0,0,0,12" />
+
+                            <!-- Minimalist Icon-Only Device Selection Buttons -->
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,24">
+                                <!-- Headphones Button (Icon Only) -->
+                                <Button x:Name="CardHeadphones"
+                                        Style="{StaticResource MonoDeviceCardBtnStyle}"
+                                        Background="#1E1E24"
+                                        BorderBrush="#484854"
+                                        Margin="0,0,10,0"
+                                        ToolTip="Headphones / TWS"
+                                        Click="OnDeviceHeadphonesClick">
+                                    <Viewbox Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <Canvas Width="24" Height="24">
+                                            <Path x:Name="HeadphoneIconPath"
+                                                  Data="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"
+                                                  Stroke="#FFFFFF"
+                                                  StrokeThickness="2"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeEndLineCap="Round"
+                                                  StrokeLineJoin="Round" />
+                                        </Canvas>
+                                    </Viewbox>
+                                </Button>
+
+                                <!-- Laptop Speakers Button (Icon Only) -->
+                                <Button x:Name="CardLaptopSpeakers"
+                                        Style="{StaticResource MonoDeviceCardBtnStyle}"
+                                        Background="#141418"
+                                        BorderBrush="#222227"
+                                        ToolTip="Laptop Speakers"
+                                        Click="OnDeviceLaptopClick">
+                                    <Viewbox Width="18" Height="18" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                        <Canvas Width="24" Height="24">
+                                            <Path x:Name="LaptopIconPath"
+                                                  Data="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"
+                                                  Stroke="#82828C"
+                                                  StrokeThickness="2"
+                                                  StrokeStartLineCap="Round"
+                                                  StrokeEndLineCap="Round"
+                                                  StrokeLineJoin="Round" />
+                                        </Canvas>
+                                    </Viewbox>
+                                </Button>
+                            </StackPanel>
+
+                            <!-- Sub-Heading: Sound Profile Preset -->
+                            <TextBlock Text="Sound Profile Preset"
+                                       Foreground="#E2E2E8"
+                                       FontSize="13.5"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,4" />
+                            <TextBlock Text="Choose a tuned acoustic signature for your music genre."
+                                       Foreground="#7A7A86"
+                                       FontSize="12"
+                                       Margin="0,0,0,12" />
+
+                            <!-- Monochromatic Segmented Preset Group -->
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,24">
+                                <Button x:Name="PresetMusicBtn" Content="Music (Balanced)" Style="{StaticResource MonoPresetPillStyle}" Click="OnPresetMusicClick" />
+                                <Button x:Name="PresetCinemaBtn" Content="Cinema 3D" Style="{StaticResource MonoPresetPillStyle}" Click="OnPresetCinemaClick" />
+                                <Button x:Name="PresetBassBtn" Content="Bass Boost" Style="{StaticResource MonoPresetPillStyle}" Click="OnPresetBassClick" />
+                                <Button x:Name="PresetVocalBtn" Content="Vocal Clarity" Style="{StaticResource MonoPresetPillStyle}" Click="OnPresetVocalClick" />
+                                <Button x:Name="PresetDynamicBtn" Content="Dynamic" Style="{StaticResource MonoPresetPillStyle}" Click="OnPresetDynamicClick" />
+                            </StackPanel>
+
+                            <!-- Sub-Heading: Custom Equalizer Sliders -->
+                            <TextBlock Text="Custom Equalizer &amp; Soundstage"
+                                       Foreground="#E2E2E8"
+                                       FontSize="13.5"
+                                       FontWeight="SemiBold"
+                                       Margin="0,0,0,4" />
+                            <TextBlock Text="Fine-tune your acoustic parameters in real time."
+                                       Foreground="#7A7A86"
+                                       FontSize="12"
+                                       Margin="0,0,0,14" />
+
+                            <!-- Flat Equalizer Slider Rows -->
+                            <StackPanel x:Name="DspSlidersContainer" Margin="0,0,0,8">
+                                <!-- Slider 1: 3D Surround Width -->
+                                <StackPanel Margin="0,0,0,18">
+                                    <Grid Margin="0,0,0,6">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="3D Spatial Width" Foreground="#FFFFFF" FontSize="13" FontWeight="Medium" />
+                                            <TextBlock Text=" • Expands the soundstage outside your head" Foreground="#7A7A86" FontSize="11.5" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                        </StackPanel>
+                                        <TextBlock x:Name="SurroundValueText" Text="70%" Foreground="#FFFFFF" FontSize="13" FontWeight="Bold" HorizontalAlignment="Right" />
+                                    </Grid>
+                                    <Slider x:Name="SurroundSlider"
+                                            Style="{StaticResource MonoSettingsSliderStyle}"
+                                            Value="70"
+                                            ValueChanged="OnDspSliderValueChanged" />
+                                </StackPanel>
+
+                                <!-- Slider 2: Bass Enhancer -->
+                                <StackPanel Margin="0,0,0,18">
+                                    <Grid Margin="0,0,0,6">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="Bass Depth &amp; Warmth" Foreground="#FFFFFF" FontSize="13" FontWeight="Medium" />
+                                            <TextBlock Text=" • Round, deep sub-frequencies" Foreground="#7A7A86" FontSize="11.5" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                        </StackPanel>
+                                        <TextBlock x:Name="BassValueText" Text="68%" Foreground="#FFFFFF" FontSize="13" FontWeight="Bold" HorizontalAlignment="Right" />
+                                    </Grid>
+                                    <Slider x:Name="BassSlider"
+                                            Style="{StaticResource MonoSettingsSliderStyle}"
+                                            Value="68"
+                                            ValueChanged="OnDspSliderValueChanged" />
+                                </StackPanel>
+
+                                <!-- Slider 3: Vocal Clarity -->
+                                <StackPanel Margin="0,0,0,10">
+                                    <Grid Margin="0,0,0,6">
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="Vocal Clarity" Foreground="#FFFFFF" FontSize="13" FontWeight="Medium" />
+                                            <TextBlock Text=" • Sharpens vocal presence &amp; high-frequency sheen" Foreground="#7A7A86" FontSize="11.5" VerticalAlignment="Center" Margin="6,0,0,0" />
+                                        </StackPanel>
+                                        <TextBlock x:Name="ClarityValueText" Text="65%" Foreground="#FFFFFF" FontSize="13" FontWeight="Bold" HorizontalAlignment="Right" />
+                                    </Grid>
+                                    <Slider x:Name="ClaritySlider"
+                                            Style="{StaticResource MonoSettingsSliderStyle}"
+                                            Value="65"
+                                            ValueChanged="OnDspSliderValueChanged" />
+                                </StackPanel>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- ================================================= -->
+                        <!-- TAB 2: DYNAMIC ISLAND CONTENT                     -->
+                        <!-- ================================================= -->
+                        <StackPanel x:Name="SettingsPanelIsland" Visibility="Collapsed">
+                            <Grid Margin="0,0,0,24">
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="Dynamic Island on Desktop"
+                                               Foreground="#FFFFFF"
+                                               FontSize="20"
+                                               FontWeight="Bold" />
+                                    <TextBlock Text="Floating desktop media controller with 60/120 FPS VSync Shared-Element Morphing."
+                                               Foreground="#8A8A96"
+                                               FontSize="12.5"
+                                               Margin="0,3,0,0" />
+                                </StackPanel>
+
+                                <!-- Close Button ✕ -->
+                                <Button HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Width="28"
+                                        Height="28"
+                                        Cursor="Hand"
+                                        ToolTip="Close (Esc)"
+                                        Click="OnCloseSettingsButtonClick">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="CloseBg" Background="Transparent" CornerRadius="6">
+                                                <Path Data="M 0,0 L 8,8 M 8,0 L 0,8"
+                                                      Stroke="#8E8E98"
+                                                      StrokeThickness="1.5"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="CloseBg" Property="Background" Value="#222228" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+                            </Grid>
+
+                            <!-- Master Toggle Row -->
+                            <Button Style="{StaticResource PlainClickableBtnStyle}"
+                                    Margin="0,0,0,16"
+                                    Click="OnIslandMasterToggleClick">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                        <TextBlock Text="Enable Dynamic Island on Desktop"
+                                                   Foreground="#FFFFFF"
+                                                   FontSize="13.5"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock Text="When Spotify is minimized, float a compact playback capsule at the top of your desktop."
+                                                   Foreground="#82828C"
+                                                   FontSize="11.5"
+                                                   Margin="0,3,0,0" />
+                                    </StackPanel>
+
+                                    <!-- Monochromatic Switch -->
+                                    <Border x:Name="IslandToggleTrack"
+                                            Grid.Column="1"
+                                            Width="46"
+                                            Height="24"
+                                            CornerRadius="12"
+                                            Background="#FFFFFF"
+                                            VerticalAlignment="Center"
+                                            Padding="3">
+                                        <Ellipse x:Name="IslandToggleThumb"
+                                                 Width="18"
+                                                 Height="18"
+                                                 Fill="#121215"
+                                                 HorizontalAlignment="Right" />
+                                    </Border>
+                                </Grid>
+                            </Button>
+                        </StackPanel>
+
+                        <!-- ================================================= -->
+                        <!-- TAB 3: ABOUT CONTENT (CLEAN CORPORATE STYLE)      -->
+                        <!-- ================================================= -->
+                        <StackPanel x:Name="SettingsPanelAbout" Visibility="Collapsed">
+                            <!-- Header with Close Button ✕ -->
+                            <Grid Margin="0,0,0,24">
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="About"
+                                               Foreground="#FFFFFF"
+                                               FontSize="20"
+                                               FontWeight="Bold" />
+                                    <TextBlock Text="Application information and project specifications."
+                                               Foreground="#8A8A96"
+                                               FontSize="12.5"
+                                               Margin="0,3,0,0" />
+                                </StackPanel>
+
+                                <!-- Close Button ✕ -->
+                                <Button HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Width="28"
+                                        Height="28"
+                                        Cursor="Hand"
+                                        ToolTip="Close (Esc)"
+                                        Click="OnCloseSettingsButtonClick">
+                                    <Button.Template>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="CloseBg" Background="Transparent" CornerRadius="6">
+                                                <Path Data="M 0,0 L 8,8 M 8,0 L 0,8"
+                                                      Stroke="#8E8E98"
+                                                      StrokeThickness="1.5"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center" />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="CloseBg" Property="Background" Value="#222228" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Button.Template>
+                                </Button>
+                            </Grid>
+
+                            <!-- Hero Header: 100% Crisp Vector SVG Spotify Emblem -->
+                            <Grid Margin="0,0,0,24">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Razor-sharp Vector SVG Official Spotify Logo -->
+                                <Viewbox Grid.Column="0"
+                                         Width="64"
+                                         Height="64"
+                                         VerticalAlignment="Center"
+                                         Margin="0,0,20,0">
+                                    <Canvas Width="24" Height="24">
+                                        <Ellipse Width="24" Height="24" Fill="#1DB954" />
+                                        <Path Data="M17.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"
+                                              Fill="#0C0C0C" />
+                                    </Canvas>
+                                </Viewbox>
+
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="Spotify Desktop"
+                                               Foreground="#FFFFFF"
+                                               FontSize="18"
+                                               FontWeight="Bold" />
+                                    <TextBlock Text="A dedicated Windows desktop client for Spotify, engineered for ad-free high-fidelity audio playback, integrated Dolby Spatial Audio DSP, native performance, and a streamlined desktop experience."
+                                               Foreground="#9A9AA6"
+                                               FontSize="12"
+                                               LineHeight="19"
+                                               TextWrapping="Wrap"
+                                               Margin="0,5,0,0" />
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Version Info -->
+                            <Grid Margin="0,0,0,24">
+                                <TextBlock Text="Version" Foreground="#7E7E8A" FontSize="13" VerticalAlignment="Center" />
+                                <TextBlock x:Name="AboutVersionText" Text="v1.0.0" Foreground="#FFFFFF" FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                            </Grid>
+
+                            <!-- GitHub Action Button -->
+                            <Button HorizontalAlignment="Left"
+                                    Cursor="Hand"
+                                    Click="OnOpenGitHubClick">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border x:Name="GhBorder"
+                                                Background="#1C1C22"
+                                                BorderBrush="#2C2C34"
+                                                BorderThickness="1"
+                                                CornerRadius="6"
+                                                Padding="14,9">
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <Viewbox Width="16" Height="16" Margin="0,0,10,0" VerticalAlignment="Center">
+                                                    <Canvas Width="24" Height="24">
+                                                        <Path Data="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0 1 12 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0 0 22 12.017C22 6.484 17.522 2 12 2z"
+                                                              Fill="#FFFFFF" />
+                                                    </Canvas>
+                                                </Viewbox>
+                                                <TextBlock Text="View on GitHub (ArisaAkiyama/spotify-desktop)"
+                                                           Foreground="#FFFFFF"
+                                                           FontSize="12.5"
+                                                           FontWeight="SemiBold"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="GhBorder" Property="Background" Value="#26262F" />
+                                                <Setter TargetName="GhBorder" Property="BorderBrush" Value="#444452" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

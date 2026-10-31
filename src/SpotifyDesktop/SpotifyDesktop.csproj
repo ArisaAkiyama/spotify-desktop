@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Assets\spotify.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>Spotify</AssemblyName>
+    <RootNamespace>SpotifyDesktop</RootNamespace>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <Title>Spotify</Title>
+    <Company>Spotify Desktop</Company>
+    <Product>Spotify Desktop</Product>
+    <Copyright>Copyright © 2026 Spotify Desktop</Copyright>
+    <Description>Spotify Native Windows Desktop App (Ad-Free + Dynamic Island + Dolby DSP)</Description>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\spotify.ico" />
+    <EmbeddedResource Include="Scripts\spotify-adblock-engine.js" />
+  </ItemGroup>
+
+</Project>
