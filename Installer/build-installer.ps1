@@ -138,7 +138,8 @@ $smallBmp.Save($smallPath, [System.Drawing.Imaging.ImageFormat]::Bmp)
 $sg.Dispose()
 $smallBmp.Dispose()
 
-Write-Host "==> [2/4] Publishing Single-File Release..." -ForegroundColor Cyan
+Write-Host "==> [2/4] Stopping any running Spotify Desktop process & publishing Single-File Release..." -ForegroundColor Cyan
+Get-Process Spotify -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
 dotnet publish $projectPath `
     --configuration Release `

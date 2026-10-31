@@ -10,10 +10,43 @@
     }
     window.__spotifyNativeAdBlockInitialized = true;
 
+    // Cache native HTMLMediaElement property descriptors for safe fast-forwarding
+    const origCurrentTimeDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+    const origPlaybackRateDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate');
+    const origMutedDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'muted');
+
+    function safeSetCurrentTime(media, seconds) {
+        try {
+            if (origCurrentTimeDescriptor && origCurrentTimeDescriptor.set) {
+                origCurrentTimeDescriptor.set.call(media, seconds);
+            } else {
+                media.currentTime = seconds;
+            }
+        } catch (_) { }
+    }
+
+    function safeSetPlaybackRate(media, rate) {
+        try {
+            if (origPlaybackRateDescriptor && origPlaybackRateDescriptor.set) {
+                origPlaybackRateDescriptor.set.call(media, rate);
+            } else {
+                media.playbackRate = rate;
+            }
+        } catch (_) { }
+    }
+
+    function safeSetMuted(media, muted) {
+        try {
+            if (origMutedDescriptor && origMutedDescriptor.set) {
+                origMutedDescriptor.set.call(media, muted);
+            } else {
+                media.muted = muted;
+            }
+        } catch (_) { }
+    }
+
     // =========================================================================
     // LAYER 1.2: WIDEVINE EME COMPATIBILITY SHIM FOR WEBVIEW2
-    // Ensures navigator.requestMediaKeySystemAccess always includes valid
-    // software robustness levels so encrypted Spotify streams never fail.
     // =========================================================================
     try {
         if (navigator.requestMediaKeySystemAccess) {
@@ -50,30 +83,69 @@
 
     // =========================================================================
     // LAYER 1.5: OFF-DOM <AUDIO>/<VIDEO> ELEMENT INTERCEPTOR & BACKGROUND PLAY
-    // Spotify Web Player creates <audio>/<video> elements off-DOM (detached).
-    // Hooking createElement, Audio, and HTMLMediaElement.prototype.play at
-    // document-start captures every media instance reliably.
     // =========================================================================
     const trackedMediaElements = new Set();
+    const knownAdFileIds = new Set();
     let activeMediaElement = null;
+    let isCurrentlyInAd = false;
+    let wasMutedBeforeAd = false;
+    let savedVolumeBeforeAd = 1.0;
+    let lastAdFastForwardTs = 0;
+    let lastAdSkipClickTs = 0;
+
+    function isMediaPlayingKnownAdFile(media) {
+        if (!media || knownAdFileIds.size === 0) return false;
+        const src = (media.currentSrc || media.src || '').toLowerCase();
+        if (!src) return false;
+        for (const id of knownAdFileIds) {
+            if (id && src.includes(id.toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function fastForwardAdMediaElement(media) {
+        if (!media) return;
+        try {
+            if (!media.muted) {
+                savedVolumeBeforeAd = media.volume > 0 ? media.volume : savedVolumeBeforeAd;
+            }
+            safeSetMuted(media, true);
+            safeSetPlaybackRate(media, 16.0);
+
+            if (Number.isFinite(media.duration) && media.duration > 0.4 && media.readyState >= 1) {
+                const targetTime = Math.max(0, media.duration - 0.08);
+                if (media.currentTime < targetTime - 0.25) {
+                    safeSetCurrentTime(media, targetTime);
+                }
+            }
+        } catch (_) { }
+    }
 
     function registerMediaElement(el) {
         if (!el || !(el instanceof HTMLMediaElement)) return el;
         if (!trackedMediaElements.has(el)) {
             trackedMediaElements.add(el);
-            el.addEventListener('play', () => {
+
+            const onMediaEventCheckAd = () => {
                 activeMediaElement = el;
-                onMediaPlayOrResume();
-            }, { passive: true });
-            el.addEventListener('playing', () => {
-                activeMediaElement = el;
-                onMediaPlayOrResume();
-            }, { passive: true });
-            el.addEventListener('loadeddata', () => {
-                if (!activeMediaElement) {
-                    activeMediaElement = el;
+                if (isCurrentlyInAd || isMediaPlayingKnownAdFile(el) || detectSpotifyAdPlaying()) {
+                    isCurrentlyInAd = true;
+                    fastForwardAdMediaElement(el);
+                } else {
+                    onMediaPlayOrResume();
                 }
-                onMediaPlayOrResume();
+            };
+
+            el.addEventListener('play', onMediaEventCheckAd, { passive: true });
+            el.addEventListener('playing', onMediaEventCheckAd, { passive: true });
+            el.addEventListener('loadedmetadata', onMediaEventCheckAd, { passive: true });
+            el.addEventListener('durationchange', onMediaEventCheckAd, { passive: true });
+            el.addEventListener('timeupdate', () => {
+                if (isCurrentlyInAd || isMediaPlayingKnownAdFile(el)) {
+                    fastForwardAdMediaElement(el);
+                }
             }, { passive: true });
         }
         if (!activeMediaElement) {
@@ -109,7 +181,12 @@
         HTMLMediaElement.prototype.play = function () {
             registerMediaElement(this);
             activeMediaElement = this;
-            onMediaPlayOrResume();
+            if (isCurrentlyInAd || isMediaPlayingKnownAdFile(this) || detectSpotifyAdPlaying()) {
+                isCurrentlyInAd = true;
+                fastForwardAdMediaElement(this);
+            } else {
+                onMediaPlayOrResume();
+            }
             return origMediaPlay.apply(this, arguments);
         };
     } catch (_) { }
@@ -163,140 +240,176 @@
     } catch (_) { }
 
     // =========================================================================
-    // LAYER 2: PRE-DOCUMENT FETCH / XHR & JSON AD PAYLOAD SANITIZER
-    // Intercepts Spotify ad-logic, ads/v1-v3, and telemetry endpoints while
-    // keeping spclient music streaming and Widevine DRM endpoints untouched.
+    // LAYER 2: PASSIVE STATE_MACHINE AD TRACK EXTRACTOR & WEBPACK CONTROLLER
+    // Inspects /state responses and WebSocket state updates without blocking
+    // spclient.wg.spotify.com (preventing "Spotify tidak bisa memutar ini sekarang").
     // =========================================================================
-    const BLOCKED_URL_PATTERNS = [
-        '/ad-logic/',
-        '/ads/v1/',
-        '/ads/v2/',
-        '/ads/v3/',
-        '/gabo-receiver-service/',
-        'adeventtracker.spotify.com',
-        'ads-fa.spotify.com',
-        'doubleclick.net',
-        'googlesyndication.com',
-        'googleadservices.com',
-        'adservice.google.',
-        '2mdn.net',
-        'omaze.com',
-        'b.scorecardresearch.com'
-    ];
+    function extractAdIdsFromStateMachine(stateMachine) {
+        if (!stateMachine || !Array.isArray(stateMachine.tracks)) return;
+        try {
+            let foundAdInQueue = false;
+            for (const track of stateMachine.tracks) {
+                if (!track || typeof track !== 'object') continue;
+                const isAdTrack =
+                    track.content_type === 'AD' ||
+                    (track.metadata && track.metadata.is_advertisement === true) ||
+                    (typeof track.uri === 'string' && track.uri.startsWith('spotify:ad:'));
 
-    function isBlockedSpotifyAdUrl(url) {
-        if (!url || typeof url !== 'string') return false;
-        const lower = url.toLowerCase();
-        for (const pattern of BLOCKED_URL_PATTERNS) {
-            if (lower.includes(pattern)) {
-                return true;
+                if (isAdTrack) {
+                    foundAdInQueue = true;
+                    const manifest = track.manifest;
+                    if (manifest) {
+                        for (const key of Object.keys(manifest)) {
+                            const list = manifest[key];
+                            if (Array.isArray(list)) {
+                                for (const item of list) {
+                                    if (item && typeof item.file_id === 'string') {
+                                        knownAdFileIds.add(item.file_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-        }
-        return false;
+            if (foundAdInQueue) {
+                setTimeout(handleActiveAdsAndPrompts, 20);
+            }
+        } catch (_) { }
     }
 
     try {
         const origFetch = window.fetch;
         if (origFetch) {
             window.fetch = async function (input, init) {
+                const url = typeof input === 'string'
+                    ? input
+                    : (input && typeof input.url === 'string' ? input.url : '');
+
+                // Block only external 3rd-party ad networks (never block spclient.wg.spotify.com)
+                if (
+                    url.includes('doubleclick.net') ||
+                    url.includes('googlesyndication.com') ||
+                    url.includes('googleadservices.com') ||
+                    url.includes('2mdn.net') ||
+                    url.includes('amillionads.com') ||
+                    url.includes('moatads.com')
+                ) {
+                    return new Response('', { status: 204 });
+                }
+
+                const response = await origFetch.apply(this, arguments);
                 try {
-                    const url = typeof input === 'string'
-                        ? input
-                        : (input && typeof input.url === 'string' ? input.url : '');
-                    if (isBlockedSpotifyAdUrl(url)) {
-                        return new Response('{}', {
-                            status: 200,
-                            statusText: 'OK',
-                            headers: { 'Content-Type': 'application/json' }
-                        });
+                    if (url.includes('/state')) {
+                        const clone = response.clone();
+                        clone.json().then((data) => {
+                            if (data && data.state_machine) {
+                                extractAdIdsFromStateMachine(data.state_machine);
+                            }
+                        }).catch(() => { });
                     }
                 } catch (_) { }
-                return origFetch.apply(this, arguments);
+                return response;
             };
         }
 
-        const origXhrOpen = XMLHttpRequest.prototype.open;
-        const origXhrSend = XMLHttpRequest.prototype.send;
-
-        XMLHttpRequest.prototype.open = function (method, url) {
-            this.__spotifyBlockedAdUrl = isBlockedSpotifyAdUrl(typeof url === 'string' ? url : String(url));
-            return origXhrOpen.apply(this, arguments);
-        };
-
-        XMLHttpRequest.prototype.send = function () {
-            if (this.__spotifyBlockedAdUrl) {
-                try {
-                    Object.defineProperty(this, 'status', { get: () => 200 });
-                    Object.defineProperty(this, 'readyState', { get: () => 4 });
-                    Object.defineProperty(this, 'responseText', { get: () => '{}' });
-                    Object.defineProperty(this, 'response', { get: () => '{}' });
-                    setTimeout(() => {
-                        this.dispatchEvent(new Event('readystatechange'));
-                        this.dispatchEvent(new Event('load'));
-                        this.dispatchEvent(new Event('loadend'));
-                    }, 1);
-                    return;
-                } catch (_) { }
-            }
-            return origXhrSend.apply(this, arguments);
-        };
+        // Passive WebSocket listener for state_machine updates
+        const OrigWebSocket = window.WebSocket;
+        if (OrigWebSocket) {
+            window.WebSocket = function (url, protocols) {
+                const ws = protocols ? new OrigWebSocket(url, protocols) : new OrigWebSocket(url);
+                ws.addEventListener('message', (event) => {
+                    try {
+                        if (typeof event.data === 'string' && event.data.includes('"state_machine"')) {
+                            const parsed = JSON.parse(event.data);
+                            if (Array.isArray(parsed.payloads)) {
+                                for (const p of parsed.payloads) {
+                                    if (p && p.state_machine) {
+                                        extractAdIdsFromStateMachine(p.state_machine);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (_) { }
+                });
+                return ws;
+            };
+            window.WebSocket.prototype = OrigWebSocket.prototype;
+            Object.assign(window.WebSocket, OrigWebSocket);
+        }
     } catch (_) { }
 
-    const AD_JSON_KEYS = new Set([
-        'ad_slots',
-        'adSlots',
-        'adBreak',
-        'adPlacements',
-        'sponsoredPlaylist'
-    ]);
-
-    function sanitizeSpotifyJson(obj, visited = new WeakSet(), depth = 0) {
-        if (!obj || typeof obj !== 'object' || depth > 12) return obj;
-        if (visited.has(obj)) return obj;
-        visited.add(obj);
-
-        if (Array.isArray(obj)) {
-            for (let i = 0; i < obj.length; i++) {
-                if (obj[i] && typeof obj[i] === 'object') {
-                    sanitizeSpotifyJson(obj[i], visited, depth + 1);
-                }
-            }
-            return obj;
-        }
-
-        for (const key of Object.keys(obj)) {
-            if (AD_JSON_KEYS.has(key)) {
-                if (Array.isArray(obj[key])) {
-                    obj[key] = [];
-                } else {
-                    delete obj[key];
-                }
-                continue;
-            }
-            const val = obj[key];
-            if (val && typeof val === 'object') {
-                sanitizeSpotifyJson(val, visited, depth + 1);
-            }
-        }
-        return obj;
-    }
-
-    const origJsonParse = JSON.parse;
-    JSON.parse = function (text, reviver) {
-        const parsed = origJsonParse.call(this, text, reviver);
+    // Hook Spotify's internal Webpack player controller (_streamer._listPlayer) for instant native "trackdone" skip
+    let internalPlayerController = null;
+    function hookWebpackPlayerController() {
         try {
-            if (
-                typeof text === 'string' &&
-                text.length > 80 &&
-                parsed &&
-                typeof parsed === 'object' &&
-                (parsed.ad_slots || parsed.adSlots || parsed.adBreak)
-            ) {
-                sanitizeSpotifyJson(parsed);
+            if (internalPlayerController) return;
+            if (!Array.isArray(window.webpackChunkclient_web)) return;
+
+            let wpRequire = null;
+            window.webpackChunkclient_web.push([[Symbol()], {}, (req) => {
+                wpRequire = req;
+            }]);
+
+            if (!wpRequire || !wpRequire.c) return;
+
+            const visited = new WeakSet();
+            function findController(obj, depth = 0) {
+                if (!obj || typeof obj !== 'object' || depth > 5 || visited.has(obj)) return null;
+                if (obj === window || obj === document || obj instanceof Node) return null;
+                visited.add(obj);
+
+                try {
+                    if (
+                        typeof obj.nextTrack === 'function' &&
+                        typeof obj.pause === 'function' &&
+                        typeof obj.resume === 'function'
+                    ) {
+                        return obj;
+                    }
+                } catch (_) {
+                    return null;
+                }
+
+                for (const key of Object.keys(obj)) {
+                    try {
+                        const found = findController(obj[key], depth + 1);
+                        if (found) return found;
+                    } catch (_) { }
+                }
+                return null;
+            }
+
+            for (const modId of Object.keys(wpRequire.c)) {
+                try {
+                    const mod = wpRequire.c[modId];
+                    if (mod && mod.exports) {
+                        const ctrl = findController(mod.exports, 0);
+                        if (ctrl) {
+                            internalPlayerController = ctrl;
+                            window.__spotifyInternalController = ctrl;
+                            if (ctrl._streamer && typeof ctrl._streamer.on === 'function') {
+                                ctrl._streamer.on('track_loaded', (e) => {
+                                    try {
+                                        const currentTrack = e && e.data && e.data.track;
+                                        if (currentTrack && currentTrack.isAd) {
+                                            if (ctrl._streamer._listPlayer && typeof ctrl._streamer._listPlayer.next === 'function') {
+                                                ctrl._streamer._listPlayer.next('trackdone');
+                                            }
+                                        }
+                                    } catch (_) { }
+                                });
+                            }
+                            break;
+                        }
+                    }
+                } catch (_) { }
             }
         } catch (_) { }
-        return parsed;
-    };
+    }
+
+    setTimeout(hookWebpackPlayerController, 3500);
+    setTimeout(hookWebpackPlayerController, 8000);
 
     // =========================================================================
     // LAYER 4: SURGICAL COSMETIC FILTER (CSS) - ZERO AI SLOP
@@ -324,6 +437,7 @@
         [data-testid="ad-slot-container"],
         [data-testid="billboard-ad"],
         [data-testid="companion-ad"],
+        [data-testid="ad-companion-card"],
         [data-testid="in-stream-ad"],
         [data-testid="sponsored-recommendation"],
         iframe[src*="doubleclick.net"],
@@ -347,14 +461,41 @@
     document.addEventListener('DOMContentLoaded', injectCleanCss);
 
     // =========================================================================
-    // LAYER 3: REAL-TIME STREAM AD-SKIPPER & MUTE GUARD
+    // LAYER 3: REAL-TIME MULTI-LANGUAGE STREAM AD-SKIPPER & MUTE GUARD
+    // Supports Bahasa Indonesia ("Spotify – Iklan", "Musikmu akan berlanjut sesudah",
+    // "Iklan selesai dalam") and English ("Spotify – Advertisement", etc.)
     // =========================================================================
-    let wasMutedBeforeAd = false;
-    let isCurrentlyInAd = false;
-    let lastAdSkipAttemptMs = 0;
-
     function detectSpotifyAdPlaying() {
-        // 1. Check Now Playing Bar / Widget ad indicators
+        // 1. Check Document Title (Indonesian "Spotify – Iklan" & English "Spotify – Advertisement")
+        const docTitle = (document.title || '').trim();
+        if (
+            /^Advertisement\b/i.test(docTitle) ||
+            /^Iklan\b/i.test(docTitle) ||
+            /Spotify\s*[–—-]\s*(Advertisement|Iklan)\b/i.test(docTitle)
+        ) {
+            return true;
+        }
+
+        // 2. Check Right Desktop Panel ("Musikmu akan berlanjut sesudah..." / "Iklan selesai dalam..." / "Your music will continue after the break")
+        const rightPanel = document.getElementById('Desktop_PanelContainer_Id');
+        if (rightPanel) {
+            if (
+                rightPanel.querySelector('[data-testid="ad-companion-card"], [data-testid="ad-companion-card-tagline"], a[data-context-item-type="ad"]')
+            ) {
+                return true;
+            }
+            const panelText = (rightPanel.textContent || '').toLowerCase();
+            if (
+                panelText.includes('musikmu akan berlanjut sesudah') ||
+                panelText.includes('iklan selesai dalam') ||
+                panelText.includes('your music will continue after the break') ||
+                panelText.includes('ad ends in')
+            ) {
+                return true;
+            }
+        }
+
+        // 3. Check Now Playing Bar / Widget ad indicators
         const nowPlayingBar = document.querySelector('[data-testid="now-playing-bar"], [data-testid="now-playing-widget"]');
         if (nowPlayingBar) {
             if (nowPlayingBar.getAttribute('data-ad') === 'true' || nowPlayingBar.getAttribute('data-test-ad-type')) {
@@ -364,34 +505,64 @@
             if (ariaLabel.includes('advertisement') || ariaLabel.includes('iklan')) {
                 return true;
             }
+
+            // Check if progress bar is locked/disabled with no track/album/episode link (classic ad break state)
+            const progressBar = nowPlayingBar.querySelector('[data-testid="playback-progressbar"]');
+            if (progressBar) {
+                const isProgressDisabled =
+                    progressBar.getAttribute('aria-disabled') === 'true' ||
+                    progressBar.hasAttribute('disabled') ||
+                    progressBar.classList.contains('disabled');
+                const contentLink = nowPlayingBar.querySelector('a[href*="/track/"], a[href*="/album/"], a[href*="/episode/"], a[href*="/show/"]');
+                if (!contentLink && isProgressDisabled) {
+                    return true;
+                }
+            }
         }
 
-        // 2. Check specific ad subtitle or ad link elements in player bar
-        if (document.querySelector('[data-testid="context-item-info-ad-subtitle"], [data-testid="ad-info-link"]')) {
+        // 4. Check explicit advertiser badges or subtitles
+        if (
+            document.querySelector(
+                '[data-testid="track-info-advertiser"], [data-testid="context-item-info-advertiser"], [data-testid="context-item-info-ad-subtitle"], [data-testid="ad-info-link"], section[aria-label="Advertiser"]'
+            )
+        ) {
             return true;
         }
 
-        // 3. Check document title & MediaSession metadata for Advertisement state
-        const docTitle = (document.title || '').trim();
-        if (/^Advertisement\b/i.test(docTitle) || /Spotify\s*[–-]\s*Advertisement/i.test(docTitle)) {
-            return true;
+        // 5. Check Now Playing Track Title text
+        const trackTitleEl = document.querySelector('[data-testid="context-item-info-title"], [data-testid="track-info-name"]');
+        if (trackTitleEl) {
+            const tText = (trackTitleEl.textContent || '').trim().toLowerCase();
+            if (tText === 'advertisement' || tText === 'iklan' || tText.startsWith('advertisement:') || tText.startsWith('iklan:')) {
+                return true;
+            }
         }
 
+        // 6. Check MediaSession metadata
         try {
             const meta = navigator.mediaSession && navigator.mediaSession.metadata;
             if (meta) {
                 const mTitle = (meta.title || '').trim();
-                if (/^(Advertisement|Iklan|Spotify)$/i.test(mTitle) && (!meta.artist || /^Spotify$/i.test(meta.artist.trim()))) {
+                if (/^(Advertisement|Iklan)$/i.test(mTitle)) {
                     return true;
                 }
             }
         } catch (_) { }
+
+        // 7. Check if active media element is playing a known AD file_id
+        const media = getActiveMediaElement();
+        if (media && isMediaPlayingKnownAdFile(media)) {
+            return true;
+        }
 
         return false;
     }
 
     function handleActiveAdsAndPrompts() {
         injectCleanCss();
+
+        // Ensure any newly attached DOM <audio>/<video> elements are registered
+        document.querySelectorAll('audio, video').forEach(registerMediaElement);
 
         const adShowing = detectSpotifyAdPlaying();
         const media = getActiveMediaElement();
@@ -400,31 +571,40 @@
             if (!isCurrentlyInAd) {
                 isCurrentlyInAd = true;
                 wasMutedBeforeAd = media ? media.muted : false;
+                savedVolumeBeforeAd = media && media.volume > 0 ? media.volume : 1.0;
             }
 
-            // Mute all tracked media elements immediately during ad break
+            // 1. Immediately mute and fast-forward all tracked media elements
             for (const el of trackedMediaElements) {
-                try {
-                    el.muted = true;
-                } catch (_) { }
+                fastForwardAdMediaElement(el);
             }
 
-            // Fast-forward the active ad stream to the end so Spotify immediately transitions to the next track
-            if (media) {
-                try {
-                    if (Number.isFinite(media.duration) && media.duration > 0.5) {
-                        media.currentTime = Math.max(0, media.duration - 0.05);
-                    }
-                    media.playbackRate = 16.0;
-                } catch (_) { }
-            }
-
-            // Trigger skip-forward button with cooldown
+            // 2. Try native Webpack controller 'trackdone' advance (cleanest transition)
             const nowMs = Date.now();
-            if (nowMs - lastAdSkipAttemptMs > 600) {
-                lastAdSkipAttemptMs = nowMs;
-                const skipBtn = document.querySelector('[data-testid="control-button-skip-forward"]');
-                if (skipBtn && !skipBtn.disabled) {
+            if (nowMs - lastAdFastForwardTs > 250) {
+                lastAdFastForwardTs = nowMs;
+                try {
+                    if (!internalPlayerController) {
+                        hookWebpackPlayerController();
+                    }
+                    if (
+                        internalPlayerController &&
+                        internalPlayerController._streamer &&
+                        internalPlayerController._streamer._listPlayer &&
+                        typeof internalPlayerController._streamer._listPlayer.next === 'function'
+                    ) {
+                        internalPlayerController._streamer._listPlayer.next('trackdone');
+                    }
+                } catch (_) { }
+            }
+
+            // 3. Click skip-forward button if enabled
+            if (nowMs - lastAdSkipClickTs > 500) {
+                lastAdSkipClickTs = nowMs;
+                const skipBtn = document.querySelector(
+                    '[data-testid="control-button-skip-forward"], button[aria-label="Next"], button[aria-label="Berikutnya"]'
+                );
+                if (skipBtn && !skipBtn.disabled && skipBtn.getAttribute('aria-disabled') !== 'true') {
                     try {
                         skipBtn.click();
                     } catch (_) { }
@@ -434,9 +614,10 @@
             isCurrentlyInAd = false;
             for (const el of trackedMediaElements) {
                 try {
-                    el.muted = wasMutedBeforeAd;
-                    if (el.playbackRate > 2) {
-                        el.playbackRate = 1.0;
+                    safeSetPlaybackRate(el, 1.0);
+                    safeSetMuted(el, wasMutedBeforeAd);
+                    if (!wasMutedBeforeAd && savedVolumeBeforeAd > 0) {
+                        el.volume = savedVolumeBeforeAd;
                     }
                 } catch (_) { }
             }
@@ -461,12 +642,13 @@
         observer.observe(root, {
             childList: true,
             subtree: true,
+            characterData: true,
             attributes: true,
-            attributeFilter: ['class', 'data-ad', 'aria-label', 'src']
+            attributeFilter: ['class', 'data-ad', 'aria-label', 'disabled', 'aria-disabled', 'src']
         });
     };
     startObserver();
-    setInterval(handleActiveAdsAndPrompts, 350);
+    setInterval(handleActiveAdsAndPrompts, 200);
 
     // =========================================================================
     // DESKTOP SYSTEM TRAY & DYNAMIC ISLAND TELEMETRY BRIDGE
@@ -488,6 +670,9 @@
     function emitMediaState() {
         try {
             if (!window.chrome || !window.chrome.webview) return;
+
+            // Do not overwrite Dynamic Island metadata with "Advertisement" / "Iklan" during brief ad skip
+            if (isCurrentlyInAd) return;
 
             const media = getActiveMediaElement();
             const meta = (navigator.mediaSession && navigator.mediaSession.metadata) || null;
@@ -530,7 +715,6 @@
                 albumArt = '';
             }
 
-            // Determine playing state from active HTMLMediaElement or Play/Pause button state
             let isPlaying = Boolean(media && !media.paused && !media.ended);
             if (!isPlaying) {
                 const playPauseBtn = document.querySelector('[data-testid="control-button-playpause"]');
@@ -571,10 +755,6 @@
 
     // =========================================================================
     // LAYER 5: STUDIO DOLBY SPATIAL AUDIO & DSP ENGINE (Web Audio API)
-    // 7-Stage Pipeline: Speaker Protection -> 6-Band Parametric EQ & De-Mud ->
-    // Psychoacoustic Sub-Bass Exciter (4x WaveShaper) -> True Mid-Side (M/S) Matrix
-    // with Bass-Safe Crossover (160Hz) -> Binaural 3D Convolver (38ms IR) ->
-    // Dolby Multi-Knee Leveler -> True-Peak Soft Clipper Limiter.
     // =========================================================================
     let audioCtx = null;
     let connectedMedia = null;
@@ -956,7 +1136,7 @@
                     presetPresence = 1.25;
                     presetAir = 1.25;
                     break;
-                default: // 'Music' (Balanced Dolby Audiophile Curve)
+                default: // 'Music'
                     presetWidth = 1.12;
                     presetBinaural = 1.05;
                     presetSub = 1.15;
@@ -1068,7 +1248,7 @@
             const clamped = Math.max(0, Math.min(1, Number(fraction) || 0));
             const media = getActiveMediaElement();
             if (media && Number.isFinite(media.duration) && media.duration > 0) {
-                media.currentTime = media.duration * clamped;
+                safeSetCurrentTime(media, media.duration * clamped);
                 setTimeout(emitMediaState, 60);
                 return;
             }

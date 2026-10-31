@@ -7,8 +7,13 @@ namespace SpotifyDesktop.Services;
 
 public sealed class AdBlockService
 {
-    private static readonly byte[] EmptyJsonBytes = Encoding.UTF8.GetBytes("{}");
+    private static readonly byte[] EmptyResponseBytes = Array.Empty<byte>();
 
+    // IMPORTANT: Never block spclient.wg.spotify.com (/ad-logic/, /ads/, /state) at network level.
+    // Blocking spclient endpoints causes Spotify's state_machine to throw
+    // "Spotify tidak bisa memutar ini sekarang" ("Spotify can't play this right now") when an ad break starts.
+    // Instead, block only 3rd-party ad/tracker networks here, while Layer 2 & Layer 3 in JS
+    // silently mute and fast-forward/skip ad streams in <100ms with zero playback errors.
     private static readonly string[] FilterPatterns =
     [
         "*doubleclick.net*",
@@ -16,18 +21,12 @@ public sealed class AdBlockService
         "*googleadservices.com*",
         "*adservice.google.*",
         "*2mdn.net*",
-        "*adeventtracker.spotify.com*",
-        "*ads-fa.spotify.com*",
-        "*analytics.spotify.com*",
-        "*crashdump.spotify.com*",
+        "*amillionads.com*",
+        "*moatads.com*",
         "*b.scorecardresearch.com*",
         "*omaze.com*",
         "*bounceexchange.com*",
-        "*/ad-logic/*",
-        "*/ads/v1/*",
-        "*/ads/v2/*",
-        "*/ads/v3/*",
-        "*/gabo-receiver-service/*"
+        "*crashdump.spotify.com*"
     ];
 
     private static readonly string[] BlockedUrlSubstrings =
@@ -37,18 +36,12 @@ public sealed class AdBlockService
         "googleadservices.com",
         "adservice.google.",
         "2mdn.net",
-        "adeventtracker.spotify.com",
-        "ads-fa.spotify.com",
-        "analytics.spotify.com",
-        "crashdump.spotify.com",
+        "amillionads.com",
+        "moatads.com",
         "b.scorecardresearch.com",
         "omaze.com",
         "bounceexchange.com",
-        "/ad-logic/",
-        "/ads/v1/",
-        "/ads/v2/",
-        "/ads/v3/",
-        "/gabo-receiver-service/"
+        "crashdump.spotify.com"
     ];
 
     private string? _cachedEngineScript;
@@ -61,8 +54,6 @@ public sealed class AdBlockService
             await webView.AddScriptToExecuteOnDocumentCreatedAsync(script);
         }
 
-        // Register targeted ad filters instead of universal '*' to eliminate IPC UI thread bottlenecks
-        // while keeping core spclient.wg.spotify.com music catalog & Widevine license endpoints untouched
         foreach (string filter in FilterPatterns)
         {
             webView.AddWebResourceRequestedFilter(filter, CoreWebView2WebResourceContext.All);
@@ -101,10 +92,10 @@ public sealed class AdBlockService
         if (IsAdRequest(uri))
         {
             e.Response = webView.Environment.CreateWebResourceResponse(
-                new MemoryStream(EmptyJsonBytes, writable: false),
-                200,
-                "OK",
-                "Content-Type: application/json\r\nAccess-Control-Allow-Origin: https://open.spotify.com\r\nAccess-Control-Allow-Credentials: true");
+                new MemoryStream(EmptyResponseBytes, writable: false),
+                204,
+                "No Content",
+                "Access-Control-Allow-Origin: https://open.spotify.com");
         }
     }
 
