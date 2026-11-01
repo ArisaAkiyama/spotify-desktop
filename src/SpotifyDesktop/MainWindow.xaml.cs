@@ -578,7 +578,7 @@ public partial class MainWindow : Window
         }
 
         coreWv.Settings.AreDefaultContextMenusEnabled = true;
-        coreWv.Settings.AreDevToolsEnabled = false;
+        coreWv.Settings.AreDevToolsEnabled = true;
         coreWv.Settings.IsStatusBarEnabled = false;
         coreWv.Settings.IsZoomControlEnabled = true;
         coreWv.Settings.IsWebMessageEnabled = true;
@@ -592,6 +592,13 @@ public partial class MainWindow : Window
                 Title = _currentDocumentTitle;
             }
             _systemTrayService.UpdateTrackTooltip(_currentDocumentTitle);
+
+            if (!string.IsNullOrEmpty(docTitle) &&
+                (docTitle.Contains("Iklan", StringComparison.OrdinalIgnoreCase) ||
+                 docTitle.Contains("Advertisement", StringComparison.OrdinalIgnoreCase)))
+            {
+                _ = coreWv.ExecuteScriptAsync("window.__spotifyDesktopControl && window.__spotifyDesktopControl.forceSkipAd();");
+            }
         };
 
         coreWv.DOMContentLoaded += async (_, _) =>

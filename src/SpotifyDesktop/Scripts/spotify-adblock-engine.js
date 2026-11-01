@@ -45,6 +45,20 @@
         } catch (_) { }
     }
 
+    // Capture Spotify's internal MediaSession action handlers (for native 'nexttrack' dispatch)
+    const capturedMediaSessionHandlers = {};
+    try {
+        if (navigator.mediaSession && navigator.mediaSession.setActionHandler) {
+            const origSetActionHandler = navigator.mediaSession.setActionHandler.bind(navigator.mediaSession);
+            navigator.mediaSession.setActionHandler = function (action, handler) {
+                if (action && typeof handler === 'function') {
+                    capturedMediaSessionHandlers[action] = handler;
+                }
+                return origSetActionHandler(action, handler);
+            };
+        }
+    } catch (_) { }
+
     // =========================================================================
     // LAYER 1.2: WIDEVINE EME COMPATIBILITY SHIM FOR WEBVIEW2
     // =========================================================================
@@ -90,6 +104,7 @@
     let isCurrentlyInAd = false;
     let wasMutedBeforeAd = false;
     let savedVolumeBeforeAd = 1.0;
+    let masterOutGainNode = null;
     let lastAdFastForwardTs = 0;
     let lastAdSkipClickTs = 0;
 
@@ -112,13 +127,17 @@
                 savedVolumeBeforeAd = media.volume > 0 ? media.volume : savedVolumeBeforeAd;
             }
             safeSetMuted(media, true);
-            safeSetPlaybackRate(media, 16.0);
+            try { media.volume = 0; } catch (_) { }
 
-            if (Number.isFinite(media.duration) && media.duration > 0.4 && media.readyState >= 1) {
-                const targetTime = Math.max(0, media.duration - 0.08);
-                if (media.currentTime < targetTime - 0.25) {
-                    safeSetCurrentTime(media, targetTime);
-                }
+            if (Number.isFinite(media.duration) && media.duration > 0) {
+                safeSetCurrentTime(media, media.duration);
+                safeSetPlaybackRate(media, 1.0);
+                try {
+                    media.dispatchEvent(new Event('timeupdate', { bubbles: true, cancelable: true }));
+                    media.dispatchEvent(new Event('ended', { bubbles: true, cancelable: true }));
+                } catch (_) { }
+            } else {
+                safeSetPlaybackRate(media, 2.0);
             }
         } catch (_) { }
     }
@@ -133,6 +152,7 @@
                 if (isCurrentlyInAd || isMediaPlayingKnownAdFile(el) || detectSpotifyAdPlaying()) {
                     isCurrentlyInAd = true;
                     fastForwardAdMediaElement(el);
+                    handleActiveAdsAndPrompts(true);
                 } else {
                     onMediaPlayOrResume();
                 }
@@ -141,9 +161,10 @@
             el.addEventListener('play', onMediaEventCheckAd, { passive: true });
             el.addEventListener('playing', onMediaEventCheckAd, { passive: true });
             el.addEventListener('loadedmetadata', onMediaEventCheckAd, { passive: true });
+            el.addEventListener('canplay', onMediaEventCheckAd, { passive: true });
             el.addEventListener('durationchange', onMediaEventCheckAd, { passive: true });
             el.addEventListener('timeupdate', () => {
-                if (isCurrentlyInAd || isMediaPlayingKnownAdFile(el)) {
+                if (isCurrentlyInAd || isMediaPlayingKnownAdFile(el) || detectSpotifyAdPlaying()) {
                     fastForwardAdMediaElement(el);
                 }
             }, { passive: true });
@@ -339,77 +360,196 @@
         }
     } catch (_) { }
 
-    // Hook Spotify's internal Webpack player controller (_streamer._listPlayer) for instant native "trackdone" skip
+    // Hook Spotify's internal Webpack/Rspack platform, ProductState & Player controller
     let internalPlayerController = null;
-    function hookWebpackPlayerController() {
+    let internalProductState = null;
+    let internalAdManagers = null;
+
+    function getWebpackRequire() {
+        for (const key of Object.keys(window)) {
+            if (/^(webpack|rspack)Chunk/i.test(key) && Array.isArray(window[key])) {
+                try {
+                    let wpReq = null;
+                    window[key].push([[Symbol()], {}, (req) => { wpReq = req; }]);
+                    if (wpReq && wpReq.c) {
+                        return wpReq;
+                    }
+                } catch (_) { }
+            }
+        }
+        return null;
+    }
+
+    function hookWebpackServices() {
         try {
-            if (internalPlayerController) return;
-            if (!Array.isArray(window.webpackChunkclient_web)) return;
-
-            let wpRequire = null;
-            window.webpackChunkclient_web.push([[Symbol()], {}, (req) => {
-                wpRequire = req;
-            }]);
-
-            if (!wpRequire || !wpRequire.c) return;
+            const wpReq = getWebpackRequire();
+            if (!wpReq || !wpReq.c) return;
 
             const visited = new WeakSet();
-            function findController(obj, depth = 0) {
-                if (!obj || typeof obj !== 'object' || depth > 5 || visited.has(obj)) return null;
-                if (obj === window || obj === document || obj instanceof Node) return null;
+
+            function checkModule(obj, depth = 0) {
+                if (!obj || typeof obj !== 'object' || depth > 4 || visited.has(obj)) return;
+                if (obj === window || obj === document || obj instanceof Node) return;
                 visited.add(obj);
 
+                // 1. Hook ProductState API (SpotX pattern)
                 try {
-                    if (
-                        typeof obj.nextTrack === 'function' &&
-                        typeof obj.pause === 'function' &&
-                        typeof obj.resume === 'function'
-                    ) {
-                        return obj;
+                    if (typeof obj.putOverridesValues === 'function') {
+                        internalProductState = obj;
+                        obj.putOverridesValues({
+                            pairs: {
+                                ads: '0',
+                                catalogue: 'premium',
+                                product: 'premium',
+                                type: 'premium',
+                                name: 'Spotify'
+                            }
+                        });
                     }
-                } catch (_) {
-                    return null;
-                }
+                } catch (_) { }
 
-                for (const key of Object.keys(obj)) {
+                // 2. Disable AdManagers
+                try {
+                    if (obj.AdManagers && obj.AdManagers.audio && typeof obj.AdManagers.audio.disable === 'function') {
+                        internalAdManagers = obj.AdManagers;
+                        obj.AdManagers.audio.disable();
+                    }
+                } catch (_) { }
+
+                // 3. Hook Player Controller
+                try {
+                    const hasNext = typeof obj.skipToNext === 'function' ||
+                        typeof obj.next === 'function' ||
+                        typeof obj.nextTrack === 'function' ||
+                        typeof obj.skip === 'function';
+                    const hasPlayState = typeof obj.pause === 'function' ||
+                        typeof obj.play === 'function' ||
+                        typeof obj.resume === 'function';
+
+                    if (hasNext && hasPlayState && !internalPlayerController) {
+                        internalPlayerController = obj;
+                        window.__spotifyInternalController = obj;
+                        if (obj._streamer && typeof obj._streamer.on === 'function') {
+                            obj._streamer.on('track_loaded', (e) => {
+                                try {
+                                    const currentTrack = e && e.data && e.data.track;
+                                    if (currentTrack && currentTrack.isAd) {
+                                        skipInternalPlayer();
+                                    }
+                                } catch (_) { }
+                            });
+                        }
+                    }
+                } catch (_) { }
+
+                for (const k of Object.keys(obj)) {
                     try {
-                        const found = findController(obj[key], depth + 1);
-                        if (found) return found;
+                        checkModule(obj[k], depth + 1);
                     } catch (_) { }
                 }
-                return null;
             }
 
-            for (const modId of Object.keys(wpRequire.c)) {
+            for (const modId of Object.keys(wpReq.c)) {
                 try {
-                    const mod = wpRequire.c[modId];
+                    const mod = wpReq.c[modId];
                     if (mod && mod.exports) {
-                        const ctrl = findController(mod.exports, 0);
-                        if (ctrl) {
-                            internalPlayerController = ctrl;
-                            window.__spotifyInternalController = ctrl;
-                            if (ctrl._streamer && typeof ctrl._streamer.on === 'function') {
-                                ctrl._streamer.on('track_loaded', (e) => {
-                                    try {
-                                        const currentTrack = e && e.data && e.data.track;
-                                        if (currentTrack && currentTrack.isAd) {
-                                            if (ctrl._streamer._listPlayer && typeof ctrl._streamer._listPlayer.next === 'function') {
-                                                ctrl._streamer._listPlayer.next('trackdone');
-                                            }
-                                        }
-                                    } catch (_) { }
-                                });
-                            }
-                            break;
-                        }
+                        checkModule(mod.exports, 0);
                     }
                 } catch (_) { }
             }
         } catch (_) { }
     }
 
-    setTimeout(hookWebpackPlayerController, 3500);
-    setTimeout(hookWebpackPlayerController, 8000);
+    function skipInternalPlayer() {
+        if (!internalPlayerController) {
+            hookWebpackServices();
+        }
+        if (!internalPlayerController) return false;
+        try {
+            if (typeof internalPlayerController.skipToNext === 'function') {
+                internalPlayerController.skipToNext();
+                return true;
+            }
+            if (typeof internalPlayerController.next === 'function') {
+                internalPlayerController.next('trackdone');
+                return true;
+            }
+            if (typeof internalPlayerController.nextTrack === 'function') {
+                internalPlayerController.nextTrack();
+                return true;
+            }
+            if (typeof internalPlayerController.skip === 'function') {
+                internalPlayerController.skip();
+                return true;
+            }
+            if (internalPlayerController._streamer) {
+                if (internalPlayerController._streamer._listPlayer && typeof internalPlayerController._streamer._listPlayer.next === 'function') {
+                    internalPlayerController._streamer._listPlayer.next('trackdone');
+                    return true;
+                }
+                if (typeof internalPlayerController._streamer.next === 'function') {
+                    internalPlayerController._streamer.next('trackdone');
+                    return true;
+                }
+            }
+        } catch (_) { }
+        return false;
+    }
+
+    function triggerReactSkipButton() {
+        const skipBtn = document.querySelector(
+            '[data-testid="control-button-skip-forward"], button[aria-label="Next"], button[aria-label="Berikutnya"]'
+        );
+        if (!skipBtn) return false;
+
+        try {
+            skipBtn.disabled = false;
+            skipBtn.removeAttribute('disabled');
+            skipBtn.setAttribute('aria-disabled', 'false');
+            skipBtn.click();
+        } catch (_) { }
+
+        // Inspect React fiber/props to invoke onClick directly
+        try {
+            const propKey = Object.keys(skipBtn).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEventHandlers$'));
+            if (propKey && skipBtn[propKey] && typeof skipBtn[propKey].onClick === 'function') {
+                skipBtn[propKey].onClick({ preventDefault: () => { }, stopPropagation: () => { } });
+                return true;
+            }
+        } catch (_) { }
+
+        try {
+            const fiberKey = Object.keys(skipBtn).find(k => k.startsWith('__reactFiber$'));
+            if (fiberKey && skipBtn[fiberKey]) {
+                let fiber = skipBtn[fiberKey];
+                let count = 0;
+                while (fiber && count < 10) {
+                    if (fiber.memoizedProps && typeof fiber.memoizedProps.onClick === 'function') {
+                        fiber.memoizedProps.onClick({ preventDefault: () => { }, stopPropagation: () => { } });
+                        return true;
+                    }
+                    fiber = fiber.return;
+                    count++;
+                }
+            }
+        } catch (_) { }
+
+        return false;
+    }
+
+    function triggerMediaSessionNext() {
+        try {
+            if (typeof capturedMediaSessionHandlers['nexttrack'] === 'function') {
+                capturedMediaSessionHandlers['nexttrack']({ action: 'nexttrack' });
+                return true;
+            }
+        } catch (_) { }
+        return false;
+    }
+
+    setTimeout(hookWebpackServices, 1500);
+    setTimeout(hookWebpackServices, 4000);
+    setTimeout(hookWebpackServices, 8000);
 
     // =========================================================================
     // LAYER 4: SURGICAL COSMETIC FILTER (CSS) - ZERO AI SLOP
@@ -438,8 +578,16 @@
         [data-testid="billboard-ad"],
         [data-testid="companion-ad"],
         [data-testid="ad-companion-card"],
+        [data-testid="ad-companion-card-tagline"],
         [data-testid="in-stream-ad"],
         [data-testid="sponsored-recommendation"],
+        [data-testid="track-info-advertiser"],
+        [data-testid="context-item-info-advertiser"],
+        [data-testid="context-item-info-ad-subtitle"],
+        [data-testid="ad-info-link"],
+        section[aria-label="Advertiser"],
+        aside[aria-label="Now playing view"] [data-testid="ad-companion-card"],
+        aside[aria-label="Now playing view"] a[href*="/ad/"],
         iframe[src*="doubleclick.net"],
         iframe[src*="googlesyndication.com"],
         .sponsor-container {
@@ -467,17 +615,24 @@
     // =========================================================================
     function detectSpotifyAdPlaying() {
         // 1. Check Document Title (Indonesian "Spotify – Iklan" & English "Spotify – Advertisement")
-        const docTitle = (document.title || '').trim();
+        const docTitle = (document.title || '').trim().toLowerCase();
         if (
-            /^Advertisement\b/i.test(docTitle) ||
-            /^Iklan\b/i.test(docTitle) ||
-            /Spotify\s*[–—-]\s*(Advertisement|Iklan)\b/i.test(docTitle)
+            docTitle === 'iklan' ||
+            docTitle === 'advertisement' ||
+            docTitle.startsWith('iklan') ||
+            docTitle.startsWith('advertisement') ||
+            docTitle.includes('– iklan') ||
+            docTitle.includes('- iklan') ||
+            docTitle.includes('— iklan') ||
+            docTitle.includes('– advertisement') ||
+            docTitle.includes('- advertisement') ||
+            docTitle.includes('— advertisement')
         ) {
             return true;
         }
 
         // 2. Check Right Desktop Panel ("Musikmu akan berlanjut sesudah..." / "Iklan selesai dalam..." / "Your music will continue after the break")
-        const rightPanel = document.getElementById('Desktop_PanelContainer_Id');
+        const rightPanel = document.getElementById('Desktop_PanelContainer_Id') || document.querySelector('aside[aria-label="Now playing view"]');
         if (rightPanel) {
             if (
                 rightPanel.querySelector('[data-testid="ad-companion-card"], [data-testid="ad-companion-card-tagline"], a[data-context-item-type="ad"]')
@@ -489,7 +644,9 @@
                 panelText.includes('musikmu akan berlanjut sesudah') ||
                 panelText.includes('iklan selesai dalam') ||
                 panelText.includes('your music will continue after the break') ||
-                panelText.includes('ad ends in')
+                panelText.includes('ad ends in') ||
+                panelText.includes('iklan •') ||
+                panelText.includes('advertisement •')
             ) {
                 return true;
             }
@@ -503,6 +660,18 @@
             }
             const ariaLabel = (nowPlayingBar.getAttribute('aria-label') || '').toLowerCase();
             if (ariaLabel.includes('advertisement') || ariaLabel.includes('iklan')) {
+                return true;
+            }
+
+            const npText = (nowPlayingBar.textContent || '').toLowerCase();
+            if (
+                npText.includes('iklan •') ||
+                npText.includes('advertisement •') ||
+                npText.includes('iklan 1 dari') ||
+                npText.includes('iklan 2 dari') ||
+                npText.includes('ad 1 of') ||
+                npText.includes('ad 2 of')
+            ) {
                 return true;
             }
 
@@ -538,12 +707,24 @@
             }
         }
 
+        const subtitleEl = document.querySelector('[data-testid="context-item-info-subtitles"], [data-testid="track-info-artists"]');
+        if (subtitleEl) {
+            const sText = (subtitleEl.textContent || '').toLowerCase();
+            if (sText.includes('iklan') || sText.includes('advertisement')) {
+                return true;
+            }
+        }
+
         // 6. Check MediaSession metadata
         try {
             const meta = navigator.mediaSession && navigator.mediaSession.metadata;
             if (meta) {
-                const mTitle = (meta.title || '').trim();
-                if (/^(Advertisement|Iklan)$/i.test(mTitle)) {
+                const mTitle = (meta.title || '').trim().toLowerCase();
+                const mArtist = (meta.artist || '').trim().toLowerCase();
+                if (
+                    mTitle === 'advertisement' || mTitle === 'iklan' ||
+                    mArtist === 'advertisement' || mArtist === 'iklan'
+                ) {
                     return true;
                 }
             }
@@ -558,13 +739,13 @@
         return false;
     }
 
-    function handleActiveAdsAndPrompts() {
+    function handleActiveAdsAndPrompts(force = false) {
         injectCleanCss();
 
         // Ensure any newly attached DOM <audio>/<video> elements are registered
         document.querySelectorAll('audio, video').forEach(registerMediaElement);
 
-        const adShowing = detectSpotifyAdPlaying();
+        const adShowing = force === true || detectSpotifyAdPlaying();
         const media = getActiveMediaElement();
 
         if (adShowing) {
@@ -574,42 +755,27 @@
                 savedVolumeBeforeAd = media && media.volume > 0 ? media.volume : 1.0;
             }
 
-            // 1. Immediately mute and fast-forward all tracked media elements
-            for (const el of trackedMediaElements) {
-                fastForwardAdMediaElement(el);
-            }
-
-            // 2. Try native Webpack controller 'trackdone' advance (cleanest transition)
-            const nowMs = Date.now();
-            if (nowMs - lastAdFastForwardTs > 250) {
-                lastAdFastForwardTs = nowMs;
+            // Mute DSP Master Gain if initialized (zero audio leak guarantee)
+            if (masterOutGainNode && audioCtx) {
                 try {
-                    if (!internalPlayerController) {
-                        hookWebpackPlayerController();
-                    }
-                    if (
-                        internalPlayerController &&
-                        internalPlayerController._streamer &&
-                        internalPlayerController._streamer._listPlayer &&
-                        typeof internalPlayerController._streamer._listPlayer.next === 'function'
-                    ) {
-                        internalPlayerController._streamer._listPlayer.next('trackdone');
-                    }
+                    masterOutGainNode.gain.setValueAtTime(0.0, audioCtx.currentTime);
                 } catch (_) { }
             }
 
-            // 3. Click skip-forward button if enabled
-            if (nowMs - lastAdSkipClickTs > 500) {
-                lastAdSkipClickTs = nowMs;
-                const skipBtn = document.querySelector(
-                    '[data-testid="control-button-skip-forward"], button[aria-label="Next"], button[aria-label="Berikutnya"]'
-                );
-                if (skipBtn && !skipBtn.disabled && skipBtn.getAttribute('aria-disabled') !== 'true') {
-                    try {
-                        skipBtn.click();
-                    } catch (_) { }
-                }
+            // 1. Immediately mute and fast-forward all tracked media elements to completion
+            for (const el of trackedMediaElements) {
+                fastForwardAdMediaElement(el);
             }
+            document.querySelectorAll('audio, video').forEach(fastForwardAdMediaElement);
+
+            // 2. Invoke Webpack/Rspack player skip
+            skipInternalPlayer();
+
+            // 3. Trigger captured MediaSession nexttrack
+            triggerMediaSessionNext();
+
+            // 4. Trigger React skip forward button (bypassing disabled attribute)
+            triggerReactSkipButton();
         } else if (isCurrentlyInAd) {
             isCurrentlyInAd = false;
             for (const el of trackedMediaElements) {
@@ -619,6 +785,13 @@
                     if (!wasMutedBeforeAd && savedVolumeBeforeAd > 0) {
                         el.volume = savedVolumeBeforeAd;
                     }
+                } catch (_) { }
+            }
+
+            if (masterOutGainNode && audioCtx) {
+                try {
+                    masterOutGainNode.gain.setValueAtTime(0.0, audioCtx.currentTime);
+                    masterOutGainNode.gain.linearRampToValueAtTime(1.0, audioCtx.currentTime + 0.05);
                 } catch (_) { }
             }
         }
@@ -648,7 +821,7 @@
         });
     };
     startObserver();
-    setInterval(handleActiveAdsAndPrompts, 200);
+    setInterval(handleActiveAdsAndPrompts, 50);
 
     // =========================================================================
     // DESKTOP SYSTEM TRAY & DYNAMIC ISLAND TELEMETRY BRIDGE
@@ -850,11 +1023,18 @@
                 }
                 const source = media.__spotifyAudioSourceNode;
 
+                // --- MASTER OUT BUS (Zero Audio Leak Guard) ---
+                if (!masterOutGainNode) {
+                    masterOutGainNode = audioCtx.createGain();
+                    masterOutGainNode.gain.value = 1.0;
+                    masterOutGainNode.connect(audioCtx.destination);
+                }
+
                 // --- DRY PATH (Pure Bit-Perfect Bypass) ---
                 const dryGain = audioCtx.createGain();
                 dryGain.gain.value = 1.0;
                 source.connect(dryGain);
-                dryGain.connect(audioCtx.destination);
+                dryGain.connect(masterOutGainNode);
 
                 // --- WET PATH (Studio Dolby Spatial DSP Pipeline) ---
                 const wetGain = audioCtx.createGain();
@@ -1033,7 +1213,7 @@
                 compressor.connect(makeupGain);
                 makeupGain.connect(limiterShaper);
                 limiterShaper.connect(wetGain);
-                wetGain.connect(audioCtx.destination);
+                wetGain.connect(masterOutGainNode);
 
                 connectedMedia = media;
                 dspNodes = {
@@ -1269,6 +1449,9 @@
             if (!settings || typeof settings !== 'object') return;
             currentAudioSettings = Object.assign({}, currentAudioSettings, settings);
             updateDolbyDspParameters();
+        },
+        forceSkipAd: function () {
+            handleActiveAdsAndPrompts(true);
         }
     };
 
