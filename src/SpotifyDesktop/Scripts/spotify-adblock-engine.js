@@ -107,6 +107,8 @@
     let masterOutGainNode = null;
     let lastAdFastForwardTs = 0;
     let lastAdSkipClickTs = 0;
+    let lastAdPromptCheckTime = 0;
+    let fastAdCheckTimer = null;
 
     function isMediaPlayingKnownAdFile(media) {
         if (!media || knownAdFileIds.size === 0) return false;
@@ -740,6 +742,7 @@
     }
 
     function handleActiveAdsAndPrompts(force = false) {
+        lastAdPromptCheckTime = Date.now();
         injectCleanCss();
 
         // Ensure any newly attached DOM <audio>/<video> elements are registered
@@ -751,6 +754,9 @@
         if (adShowing) {
             if (!isCurrentlyInAd) {
                 isCurrentlyInAd = true;
+                if (!fastAdCheckTimer) {
+                    fastAdCheckTimer = setInterval(handleActiveAdsAndPrompts, 100);
+                }
                 wasMutedBeforeAd = media ? media.muted : false;
                 savedVolumeBeforeAd = media && media.volume > 0 ? media.volume : 1.0;
             }
@@ -778,6 +784,10 @@
             triggerReactSkipButton();
         } else if (isCurrentlyInAd) {
             isCurrentlyInAd = false;
+            if (fastAdCheckTimer) {
+                clearInterval(fastAdCheckTimer);
+                fastAdCheckTimer = null;
+            }
             for (const el of trackedMediaElements) {
                 try {
                     safeSetPlaybackRate(el, 1.0);
@@ -806,6 +816,10 @@
         }
         const observer = new MutationObserver(() => {
             if (mutationScheduled) return;
+            const elapsed = Date.now() - lastAdPromptCheckTime;
+            if (elapsed < 250 && !isCurrentlyInAd) {
+                return;
+            }
             mutationScheduled = true;
             requestAnimationFrame(() => {
                 mutationScheduled = false;
@@ -821,7 +835,7 @@
         });
     };
     startObserver();
-    setInterval(handleActiveAdsAndPrompts, 50);
+    setInterval(handleActiveAdsAndPrompts, 1000);
 
     // =========================================================================
     // DESKTOP SYSTEM TRAY & DYNAMIC ISLAND TELEMETRY BRIDGE
@@ -994,6 +1008,18 @@
         return buffer;
     }
 
+    function disconnectDspNodes(nodes) {
+        if (!nodes) return;
+        for (const key of Object.keys(nodes)) {
+            try {
+                const node = nodes[key];
+                if (node && typeof node.disconnect === 'function') {
+                    node.disconnect();
+                }
+            } catch (_) { }
+        }
+    }
+
     function ensureDolbyAudioGraph() {
         try {
             const media = getActiveMediaElement();
@@ -1010,11 +1036,19 @@
             }
 
             if (connectedMedia !== media || !dspNodes) {
-                if (dspNodes) {
+                if (connectedMedia && connectedMedia !== media) {
                     try {
-                        dspNodes.dryGain.disconnect();
-                        dspNodes.wetGain.disconnect();
+                        connectedMedia.removeEventListener('play', onMediaPlayOrResume);
+                        connectedMedia.removeEventListener('playing', onMediaPlayOrResume);
+                        connectedMedia.removeEventListener('loadedmetadata', onMediaPlayOrResume);
+                        if (connectedMedia.__spotifyAudioSourceNode) {
+                            connectedMedia.__spotifyAudioSourceNode.disconnect();
+                        }
                     } catch (_) { }
+                }
+
+                if (dspNodes) {
+                    disconnectDspNodes(dspNodes);
                     dspNodes = null;
                 }
 
@@ -1226,11 +1260,32 @@
                     vocalFilter,
                     presenceFilter,
                     airFilter,
+                    exciterLpf,
+                    exciterShaper,
+                    exciterBpf,
                     exciterGain,
+                    preSpatialBus,
+                    splitter,
+                    midGainL,
+                    midGainR,
+                    midBus,
+                    sideGainL,
+                    sideGainR,
+                    sideBusRaw,
+                    sideHpf,
                     sideWidthGain,
+                    merger,
+                    midToL,
+                    midToR,
+                    sideToL,
+                    sideToR,
+                    convolver,
+                    convBpf,
                     convWetGain,
+                    spatialBus,
                     compressor,
-                    makeupGain
+                    makeupGain,
+                    limiterShaper
                 };
             }
 

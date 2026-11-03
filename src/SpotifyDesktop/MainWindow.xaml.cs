@@ -72,6 +72,7 @@ public partial class MainWindow : Window
 
         _systemTrayService = new SystemTrayService(
             showWindowAction: () => Dispatcher.Invoke(RestoreFromTray),
+            reloadPlayerAction: () => Dispatcher.Invoke(ReloadPlayer),
             executeMediaCommandAsync: ExecutePlayerCommandAsync,
             exitApplicationAction: () => Dispatcher.Invoke(ExitApplication));
 
@@ -225,6 +226,13 @@ public partial class MainWindow : Window
         {
             e.Handled = true;
             CloseSettings();
+            return;
+        }
+
+        if (e.Key == Key.F5 || (e.Key == Key.R && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control))
+        {
+            e.Handled = true;
+            ReloadPlayer();
         }
     }
 
@@ -474,7 +482,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            Process.Start(new ProcessStartInfo("https://github.com/ArisaAkiyama/ytm-desktop")
+            Process.Start(new ProcessStartInfo("https://github.com/ArisaAkiyama/spotify-desktop")
             {
                 UseShellExecute = true
             });
@@ -483,6 +491,82 @@ public partial class MainWindow : Window
         {
             // Ignore browser launch errors
         }
+    }
+
+    private void OnReloadPlayerButtonClick(object sender, RoutedEventArgs e)
+    {
+        ReloadPlayer();
+    }
+
+    public void ReloadPlayer()
+    {
+        try
+        {
+            if (MusicWebView.CoreWebView2 is not null)
+            {
+                MusicWebView.Reload();
+            }
+            else
+            {
+                _ = RecreateWebViewAsync();
+            }
+        }
+        catch
+        {
+            _ = RecreateWebViewAsync();
+        }
+    }
+
+    private async Task RecreateWebViewAsync()
+    {
+        try
+        {
+            WebViewContainer.Children.Clear();
+            MusicWebView.Dispose();
+
+            MusicWebView = new Microsoft.Web.WebView2.Wpf.WebView2
+            {
+                DefaultBackgroundColor = System.Drawing.Color.FromArgb(0, 0, 0),
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Stretch,
+                VerticalAlignment = System.Windows.VerticalAlignment.Stretch
+            };
+            WebViewContainer.Children.Add(MusicWebView);
+
+            await InitializeWebViewAsync();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"Failed to recreate WebView2: {ex.Message}");
+        }
+    }
+
+    private readonly List<DateTime> _processFailureTimestamps = [];
+
+    private async void OnCoreWebView2ProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)
+    {
+        DateTime now = DateTime.UtcNow;
+        _processFailureTimestamps.RemoveAll(t => (now - t).TotalSeconds > 30);
+        _processFailureTimestamps.Add(now);
+
+        Debug.WriteLine($"CoreWebView2 Process Failed: Kind={e.ProcessFailedKind}, Reason={e.Reason}, ExitCode={e.ExitCode}");
+
+        if (_processFailureTimestamps.Count > 3)
+        {
+            Debug.WriteLine("Repeated process failures detected (>3 in 30s). Delaying recovery to prevent crash loop.");
+            await Task.Delay(4000);
+        }
+
+        await Dispatcher.InvokeAsync(async () =>
+        {
+            if (e.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
+            {
+                await RecreateWebViewAsync();
+            }
+            else
+            {
+                ReloadPlayer();
+            }
+        });
     }
 
     private void OnMinimizeButtonClick(object sender, RoutedEventArgs e)
@@ -550,10 +634,8 @@ public partial class MainWindow : Window
         [
             "--autoplay-policy=no-user-gesture-required",
             "--enable-features=EncryptedMedia,HardwareMediaKeyHandling,MediaSessionService",
-            "--disable-background-timer-throttling",
-            "--disable-renderer-backgrounding",
-            "--disable-backgrounding-occluded-windows",
-            "--disable-features=CalculateNativeWinOcclusion,msWebOOUI,msPdfOOUI"
+            "--disable-features=msWebOOUI,msPdfOOUI",
+            "--enable-smooth-scrolling"
         ]);
 
         var envOptions = new CoreWebView2EnvironmentOptions(browserArgs)
@@ -611,6 +693,7 @@ public partial class MainWindow : Window
             await PushAudioSettingsToWebViewAsync();
         };
 
+        coreWv.ProcessFailed += OnCoreWebView2ProcessFailed;
         coreWv.WebMessageReceived += OnWebMessageReceived;
         coreWv.NewWindowRequested += OnNewWindowRequested;
         coreWv.PermissionRequested += (_, args) =>

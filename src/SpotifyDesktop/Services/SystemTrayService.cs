@@ -10,16 +10,19 @@ public sealed class SystemTrayService : IDisposable
 {
     private readonly NotifyIcon _notifyIcon;
     private readonly Action _showWindowAction;
+    private readonly Action _reloadPlayerAction;
     private readonly Func<string, Task> _executeMediaCommandAsync;
     private readonly Action _exitApplicationAction;
     private bool _disposed;
 
     public SystemTrayService(
         Action showWindowAction,
+        Action reloadPlayerAction,
         Func<string, Task> executeMediaCommandAsync,
         Action exitApplicationAction)
     {
         _showWindowAction = showWindowAction;
+        _reloadPlayerAction = reloadPlayerAction;
         _executeMediaCommandAsync = executeMediaCommandAsync;
         _exitApplicationAction = exitApplicationAction;
 
@@ -80,6 +83,12 @@ public sealed class SystemTrayService : IDisposable
         };
         openItem.Click += (_, _) => _showWindowAction();
 
+        ToolStripMenuItem reloadItem = new("Reload Player")
+        {
+            ForeColor = Color.FromArgb(241, 241, 241)
+        };
+        reloadItem.Click += (_, _) => _reloadPlayerAction();
+
         ToolStripMenuItem playPauseItem = new("Play / Pause")
         {
             ForeColor = Color.FromArgb(241, 241, 241)
@@ -105,6 +114,7 @@ public sealed class SystemTrayService : IDisposable
         exitItem.Click += (_, _) => _exitApplicationAction();
 
         menu.Items.Add(openItem);
+        menu.Items.Add(reloadItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(playPauseItem);
         menu.Items.Add(nextItem);
