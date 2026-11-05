@@ -593,9 +593,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        string settingsJson = _settingsService.ToJson();
         try
         {
+            MusicWebView.CoreWebView2.IsMuted = false;
+            string settingsJson = _settingsService.ToJson();
             await MusicWebView.CoreWebView2.ExecuteScriptAsync(
                 $"window.__spotifyDesktopControl && window.__spotifyDesktopControl.applyAudioSettings({settingsJson});");
         }
@@ -664,6 +665,7 @@ public partial class MainWindow : Window
         coreWv.Settings.IsStatusBarEnabled = false;
         coreWv.Settings.IsZoomControlEnabled = true;
         coreWv.Settings.IsWebMessageEnabled = true;
+        coreWv.IsMuted = false;
 
         coreWv.DocumentTitleChanged += (_, _) =>
         {
@@ -690,6 +692,7 @@ public partial class MainWindow : Window
 
         coreWv.NavigationCompleted += async (_, _) =>
         {
+            coreWv.IsMuted = false;
             await PushAudioSettingsToWebViewAsync();
         };
 

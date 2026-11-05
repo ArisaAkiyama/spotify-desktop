@@ -10,10 +10,11 @@
     }
     window.__spotifyNativeAdBlockInitialized = true;
 
-    // Cache native HTMLMediaElement property descriptors for safe fast-forwarding
+    // Cache native HTMLMediaElement property descriptors for safe fast-forwarding and volume restoration
     const origCurrentTimeDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
     const origPlaybackRateDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate');
     const origMutedDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'muted');
+    const origVolumeDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'volume');
 
     function safeSetCurrentTime(media, seconds) {
         try {
@@ -41,6 +42,17 @@
                 origMutedDescriptor.set.call(media, muted);
             } else {
                 media.muted = muted;
+            }
+        } catch (_) { }
+    }
+
+    function safeSetVolume(media, vol) {
+        try {
+            const clamped = Math.max(0, Math.min(1, vol));
+            if (origVolumeDescriptor && origVolumeDescriptor.set) {
+                origVolumeDescriptor.set.call(media, clamped);
+            } else {
+                media.volume = clamped;
             }
         } catch (_) { }
     }
@@ -102,9 +114,7 @@
     const knownAdFileIds = new Set();
     let activeMediaElement = null;
     let isCurrentlyInAd = false;
-    let wasMutedBeforeAd = false;
     let savedVolumeBeforeAd = 1.0;
-    let masterOutGainNode = null;
     let lastAdFastForwardTs = 0;
     let lastAdSkipClickTs = 0;
     let lastAdPromptCheckTime = 0;
@@ -122,14 +132,81 @@
         return false;
     }
 
+    function isSpotifyUiMuted() {
+        try {
+            const muteBtn = document.querySelector(
+                '[data-testid="volume-bar-toggle-mute-button"], [data-testid="volume-bar"] button'
+            );
+            if (muteBtn) {
+                const label = (muteBtn.getAttribute('aria-label') || '').toLowerCase();
+                if (label.includes('bunyikan') || label.includes('unmute') || label.includes('nyalakan')) {
+                    return true;
+                }
+            }
+        } catch (_) { }
+        return false;
+    }
+
+    function getSpotifyUiVolume() {
+        try {
+            const slider = document.querySelector(
+                '[data-testid="volume-bar"] [role="slider"], [data-testid="volume-bar"] [data-testid="progress-bar"]'
+            );
+            if (slider) {
+                const val = parseFloat(slider.getAttribute('aria-valuenow'));
+                if (Number.isFinite(val)) {
+                    if (val > 1.0) return Math.min(1.0, Math.max(0.01, val / 100.0));
+                    if (val > 0.0) return val;
+                }
+            }
+            const range = document.querySelector('[data-testid="volume-bar"] input[type="range"]');
+            if (range) {
+                const val = parseFloat(range.value);
+                if (Number.isFinite(val)) {
+                    const max = parseFloat(range.max) || 1.0;
+                    if (val > 0) return Math.min(1.0, val / max);
+                }
+            }
+            if (savedVolumeBeforeAd > 0) {
+                return savedVolumeBeforeAd;
+            }
+        } catch (_) { }
+        return 1.0;
+    }
+
+    function ensureNormalAudioPlayback(media) {
+        if (!media || !(media instanceof HTMLMediaElement)) return;
+        if (detectSpotifyAdPlaying() || isMediaPlayingKnownAdFile(media)) return;
+
+        try {
+            const userMuted = isSpotifyUiMuted();
+            if (!userMuted) {
+                if (media.muted) {
+                    safeSetMuted(media, false);
+                }
+                if (media.volume === 0) {
+                    const targetVol = getSpotifyUiVolume();
+                    safeSetVolume(media, targetVol);
+                }
+            }
+            if (media.playbackRate !== 1.0) {
+                safeSetPlaybackRate(media, 1.0);
+            }
+        } catch (_) { }
+    }
+
     function fastForwardAdMediaElement(media) {
         if (!media) return;
         try {
-            if (!media.muted) {
-                savedVolumeBeforeAd = media.volume > 0 ? media.volume : savedVolumeBeforeAd;
+            if (!media.muted && media.volume > 0) {
+                savedVolumeBeforeAd = media.volume;
+            } else {
+                const uiVol = getSpotifyUiVolume();
+                if (uiVol > 0) savedVolumeBeforeAd = uiVol;
             }
+
             safeSetMuted(media, true);
-            try { media.volume = 0; } catch (_) { }
+            safeSetVolume(media, 0);
 
             if (Number.isFinite(media.duration) && media.duration > 0) {
                 safeSetCurrentTime(media, media.duration);
@@ -151,11 +228,14 @@
 
             const onMediaEventCheckAd = () => {
                 activeMediaElement = el;
-                if (isCurrentlyInAd || isMediaPlayingKnownAdFile(el) || detectSpotifyAdPlaying()) {
+                const isAd = isMediaPlayingKnownAdFile(el) || detectSpotifyAdPlaying();
+                if (isAd) {
                     isCurrentlyInAd = true;
                     fastForwardAdMediaElement(el);
                     handleActiveAdsAndPrompts(true);
                 } else {
+                    isCurrentlyInAd = false;
+                    ensureNormalAudioPlayback(el);
                     onMediaPlayOrResume();
                 }
             };
@@ -166,8 +246,15 @@
             el.addEventListener('canplay', onMediaEventCheckAd, { passive: true });
             el.addEventListener('durationchange', onMediaEventCheckAd, { passive: true });
             el.addEventListener('timeupdate', () => {
-                if (isCurrentlyInAd || isMediaPlayingKnownAdFile(el) || detectSpotifyAdPlaying()) {
+                const isAd = isMediaPlayingKnownAdFile(el) || detectSpotifyAdPlaying();
+                if (isAd) {
+                    isCurrentlyInAd = true;
                     fastForwardAdMediaElement(el);
+                } else {
+                    if (isCurrentlyInAd) {
+                        isCurrentlyInAd = false;
+                    }
+                    ensureNormalAudioPlayback(el);
                 }
             }, { passive: true });
         }
@@ -204,10 +291,13 @@
         HTMLMediaElement.prototype.play = function () {
             registerMediaElement(this);
             activeMediaElement = this;
-            if (isCurrentlyInAd || isMediaPlayingKnownAdFile(this) || detectSpotifyAdPlaying()) {
+            const isAd = isMediaPlayingKnownAdFile(this) || detectSpotifyAdPlaying();
+            if (isAd) {
                 isCurrentlyInAd = true;
                 fastForwardAdMediaElement(this);
             } else {
+                isCurrentlyInAd = false;
+                ensureNormalAudioPlayback(this);
                 onMediaPlayOrResume();
             }
             return origMediaPlay.apply(this, arguments);
@@ -757,15 +847,11 @@
                 if (!fastAdCheckTimer) {
                     fastAdCheckTimer = setInterval(handleActiveAdsAndPrompts, 100);
                 }
-                wasMutedBeforeAd = media ? media.muted : false;
-                savedVolumeBeforeAd = media && media.volume > 0 ? media.volume : 1.0;
-            }
-
-            // Mute DSP Master Gain if initialized (zero audio leak guarantee)
-            if (masterOutGainNode && audioCtx) {
-                try {
-                    masterOutGainNode.gain.setValueAtTime(0.0, audioCtx.currentTime);
-                } catch (_) { }
+                if (media && !media.muted && media.volume > 0) {
+                    savedVolumeBeforeAd = media.volume;
+                } else {
+                    savedVolumeBeforeAd = getSpotifyUiVolume();
+                }
             }
 
             // 1. Immediately mute and fast-forward all tracked media elements to completion
@@ -782,27 +868,22 @@
 
             // 4. Trigger React skip forward button (bypassing disabled attribute)
             triggerReactSkipButton();
-        } else if (isCurrentlyInAd) {
-            isCurrentlyInAd = false;
-            if (fastAdCheckTimer) {
-                clearInterval(fastAdCheckTimer);
-                fastAdCheckTimer = null;
-            }
-            for (const el of trackedMediaElements) {
-                try {
-                    safeSetPlaybackRate(el, 1.0);
-                    safeSetMuted(el, wasMutedBeforeAd);
-                    if (!wasMutedBeforeAd && savedVolumeBeforeAd > 0) {
-                        el.volume = savedVolumeBeforeAd;
-                    }
-                } catch (_) { }
+        } else {
+            // Normal Music Playback: Continuous Un-Mute & Audio Watchdog
+            if (isCurrentlyInAd) {
+                isCurrentlyInAd = false;
+                if (fastAdCheckTimer) {
+                    clearInterval(fastAdCheckTimer);
+                    fastAdCheckTimer = null;
+                }
             }
 
-            if (masterOutGainNode && audioCtx) {
-                try {
-                    masterOutGainNode.gain.setValueAtTime(0.0, audioCtx.currentTime);
-                    masterOutGainNode.gain.linearRampToValueAtTime(1.0, audioCtx.currentTime + 0.05);
-                } catch (_) { }
+            for (const el of trackedMediaElements) {
+                ensureNormalAudioPlayback(el);
+            }
+            document.querySelectorAll('audio, video').forEach(ensureNormalAudioPlayback);
+            if (activeMediaElement) {
+                ensureNormalAudioPlayback(activeMediaElement);
             }
         }
     }
@@ -941,11 +1022,13 @@
     setInterval(emitMediaState, 500);
 
     // =========================================================================
-    // LAYER 5: STUDIO DOLBY SPATIAL AUDIO & DSP ENGINE (Web Audio API)
+    // LAYER 5: BIT-PERFECT DIRECT SOUND & HARDWARE STREAMING CONTROLLER
+    // In Spotify Web Player, music streams are strictly protected by Widevine DRM
+    // (Encrypted Media Extensions / EME). Creating a Web Audio createMediaElementSource
+    // intercepts the stream and forces Chromium CDM to output digital silence (all zeros).
+    // Therefore, Spotify audio MUST stream directly via native Bit-Perfect DirectSound /
+    // WASAPI output to the default audio device, while settings are safely synced.
     // =========================================================================
-    let audioCtx = null;
-    let connectedMedia = null;
-    let dspNodes = null;
     let currentAudioSettings = {
         dolbyEnabled: false,
         dolbyDeviceMode: 'Headphones',
@@ -956,493 +1039,11 @@
     };
 
     function onMediaPlayOrResume() {
-        if (audioCtx && audioCtx.state === 'suspended') {
-            audioCtx.resume().catch(() => { });
-        }
-        if (currentAudioSettings.dolbyEnabled) {
-            updateDolbyDspParameters();
+        const media = getActiveMediaElement();
+        if (media) {
+            ensureNormalAudioPlayback(media);
         }
     }
-
-    function generateSoftSaturationCurve(samples = 1024, drive = 1.0) {
-        const curve = new Float32Array(samples);
-        for (let i = 0; i < samples; ++i) {
-            const x = (i * 2) / samples - 1;
-            curve[i] = Math.tanh(x * drive);
-        }
-        return curve;
-    }
-
-    function generateBinauralEarlyReflectionsBuffer(ctx, duration = 0.038) {
-        const sampleRate = ctx.sampleRate;
-        const length = Math.floor(sampleRate * duration);
-        const buffer = ctx.createBuffer(2, length, sampleRate);
-        const leftData = buffer.getChannelData(0);
-        const rightData = buffer.getChannelData(1);
-
-        const taps = [
-            { t: 0.0042, gL: 0.45, gR: -0.22 },
-            { t: 0.0089, gL: -0.32, gR: 0.40 },
-            { t: 0.0145, gL: 0.38, gR: 0.35 },
-            { t: 0.0210, gL: -0.26, gR: -0.30 },
-            { t: 0.0275, gL: 0.22, gR: -0.24 },
-            { t: 0.0340, gL: -0.18, gR: 0.20 }
-        ];
-
-        for (const tap of taps) {
-            const index = Math.floor(tap.t * sampleRate);
-            if (index < length) {
-                leftData[index] += tap.gL;
-                rightData[index] += tap.gR;
-            }
-        }
-
-        const decayTimeConstant = duration * 0.42;
-        for (let i = 0; i < length; i++) {
-            const t = i / sampleRate;
-            const envelope = Math.exp(-t / decayTimeConstant);
-            leftData[i] += (Math.random() * 2 - 1) * 0.06 * envelope;
-            rightData[i] += (Math.random() * 2 - 1) * 0.06 * envelope;
-        }
-
-        return buffer;
-    }
-
-    function disconnectDspNodes(nodes) {
-        if (!nodes) return;
-        for (const key of Object.keys(nodes)) {
-            try {
-                const node = nodes[key];
-                if (node && typeof node.disconnect === 'function') {
-                    node.disconnect();
-                }
-            } catch (_) { }
-        }
-    }
-
-    function ensureDolbyAudioGraph() {
-        try {
-            const media = getActiveMediaElement();
-            if (!media) return false;
-
-            if (!audioCtx) {
-                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-                if (!AudioContextClass) return false;
-                audioCtx = new AudioContextClass({ latencyHint: 'interactive' });
-            }
-
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume().catch(() => { });
-            }
-
-            if (connectedMedia !== media || !dspNodes) {
-                if (connectedMedia && connectedMedia !== media) {
-                    try {
-                        connectedMedia.removeEventListener('play', onMediaPlayOrResume);
-                        connectedMedia.removeEventListener('playing', onMediaPlayOrResume);
-                        connectedMedia.removeEventListener('loadedmetadata', onMediaPlayOrResume);
-                        if (connectedMedia.__spotifyAudioSourceNode) {
-                            connectedMedia.__spotifyAudioSourceNode.disconnect();
-                        }
-                    } catch (_) { }
-                }
-
-                if (dspNodes) {
-                    disconnectDspNodes(dspNodes);
-                    dspNodes = null;
-                }
-
-                if (!media.__spotifyAudioSourceNode) {
-                    media.__spotifyAudioSourceNode = audioCtx.createMediaElementSource(media);
-                }
-                const source = media.__spotifyAudioSourceNode;
-
-                // --- MASTER OUT BUS (Zero Audio Leak Guard) ---
-                if (!masterOutGainNode) {
-                    masterOutGainNode = audioCtx.createGain();
-                    masterOutGainNode.gain.value = 1.0;
-                    masterOutGainNode.connect(audioCtx.destination);
-                }
-
-                // --- DRY PATH (Pure Bit-Perfect Bypass) ---
-                const dryGain = audioCtx.createGain();
-                dryGain.gain.value = 1.0;
-                source.connect(dryGain);
-                dryGain.connect(masterOutGainNode);
-
-                // --- WET PATH (Studio Dolby Spatial DSP Pipeline) ---
-                const wetGain = audioCtx.createGain();
-                wetGain.gain.value = 0.0;
-
-                // STAGE 1: Subsonic & Speaker Excursion Protection
-                const hpFilter = audioCtx.createBiquadFilter();
-                hpFilter.type = 'highpass';
-                hpFilter.frequency.value = 22;
-                hpFilter.Q.value = 0.707;
-                source.connect(hpFilter);
-
-                // STAGE 2: 6-Band Parametric Acoustic EQ
-                const subBassFilter = audioCtx.createBiquadFilter();
-                subBassFilter.type = 'lowshelf';
-                subBassFilter.frequency.value = 60;
-                subBassFilter.gain.value = 0;
-
-                const upperBassFilter = audioCtx.createBiquadFilter();
-                upperBassFilter.type = 'peaking';
-                upperBassFilter.frequency.value = 135;
-                upperBassFilter.Q.value = 1.1;
-                upperBassFilter.gain.value = 0;
-
-                const deMudFilter = audioCtx.createBiquadFilter();
-                deMudFilter.type = 'peaking';
-                deMudFilter.frequency.value = 290;
-                deMudFilter.Q.value = 1.35;
-                deMudFilter.gain.value = 0;
-
-                const vocalFilter = audioCtx.createBiquadFilter();
-                vocalFilter.type = 'peaking';
-                vocalFilter.frequency.value = 2500;
-                vocalFilter.Q.value = 0.9;
-                vocalFilter.gain.value = 0;
-
-                const presenceFilter = audioCtx.createBiquadFilter();
-                presenceFilter.type = 'peaking';
-                presenceFilter.frequency.value = 5600;
-                presenceFilter.Q.value = 1.0;
-                presenceFilter.gain.value = 0;
-
-                const airFilter = audioCtx.createBiquadFilter();
-                airFilter.type = 'highshelf';
-                airFilter.frequency.value = 11500;
-                airFilter.gain.value = 0;
-
-                hpFilter.connect(subBassFilter);
-                subBassFilter.connect(upperBassFilter);
-                upperBassFilter.connect(deMudFilter);
-                deMudFilter.connect(vocalFilter);
-                vocalFilter.connect(presenceFilter);
-                presenceFilter.connect(airFilter);
-
-                // STAGE 3: Psychoacoustic Sub-Bass Harmonic Exciter (WaveShaper 4x)
-                const exciterLpf = audioCtx.createBiquadFilter();
-                exciterLpf.type = 'lowpass';
-                exciterLpf.frequency.value = 115;
-                exciterLpf.Q.value = 0.707;
-
-                const exciterShaper = audioCtx.createWaveShaper();
-                exciterShaper.curve = generateSoftSaturationCurve(512, 1.8);
-                exciterShaper.oversample = '4x';
-
-                const exciterBpf = audioCtx.createBiquadFilter();
-                exciterBpf.type = 'bandpass';
-                exciterBpf.frequency.value = 160;
-                exciterBpf.Q.value = 1.15;
-
-                const exciterGain = audioCtx.createGain();
-                exciterGain.gain.value = 0.0;
-
-                hpFilter.connect(exciterLpf);
-                exciterLpf.connect(exciterShaper);
-                exciterShaper.connect(exciterBpf);
-                exciterBpf.connect(exciterGain);
-
-                const preSpatialBus = audioCtx.createGain();
-                airFilter.connect(preSpatialBus);
-                exciterGain.connect(preSpatialBus);
-
-                // STAGE 4: True Mid-Side (M/S) Matrix with Bass-Safe Crossover
-                const splitter = audioCtx.createChannelSplitter(2);
-                preSpatialBus.connect(splitter);
-
-                const midGainL = audioCtx.createGain();
-                const midGainR = audioCtx.createGain();
-                midGainL.gain.value = 0.5;
-                midGainR.gain.value = 0.5;
-                splitter.connect(midGainL, 0);
-                splitter.connect(midGainR, 1);
-
-                const midBus = audioCtx.createGain();
-                midGainL.connect(midBus);
-                midGainR.connect(midBus);
-
-                const sideGainL = audioCtx.createGain();
-                const sideGainR = audioCtx.createGain();
-                sideGainL.gain.value = 0.5;
-                sideGainR.gain.value = -0.5;
-                splitter.connect(sideGainL, 0);
-                splitter.connect(sideGainR, 1);
-
-                const sideBusRaw = audioCtx.createGain();
-                sideGainL.connect(sideBusRaw);
-                sideGainR.connect(sideBusRaw);
-
-                const sideHpf = audioCtx.createBiquadFilter();
-                sideHpf.type = 'highpass';
-                sideHpf.frequency.value = 160;
-                sideHpf.Q.value = 0.707;
-                sideBusRaw.connect(sideHpf);
-
-                const sideWidthGain = audioCtx.createGain();
-                sideWidthGain.gain.value = 1.0;
-                sideHpf.connect(sideWidthGain);
-
-                const merger = audioCtx.createChannelMerger(2);
-
-                const midToL = audioCtx.createGain();
-                const midToR = audioCtx.createGain();
-                midToL.gain.value = 1.0;
-                midToR.gain.value = 1.0;
-                midBus.connect(midToL);
-                midBus.connect(midToR);
-
-                const sideToL = audioCtx.createGain();
-                const sideToR = audioCtx.createGain();
-                sideToL.gain.value = 1.0;
-                sideToR.gain.value = -1.0;
-                sideWidthGain.connect(sideToL);
-                sideWidthGain.connect(sideToR);
-
-                midToL.connect(merger, 0, 0);
-                sideToL.connect(merger, 0, 0);
-                midToR.connect(merger, 0, 1);
-                sideToR.connect(merger, 0, 1);
-
-                // STAGE 5: Binaural 3D Early Reflections (ConvolverNode)
-                const convolver = audioCtx.createConvolver();
-                convolver.buffer = generateBinauralEarlyReflectionsBuffer(audioCtx, 0.038);
-
-                const convBpf = audioCtx.createBiquadFilter();
-                convBpf.type = 'bandpass';
-                convBpf.frequency.value = 2400;
-                convBpf.Q.value = 0.55;
-
-                const convWetGain = audioCtx.createGain();
-                convWetGain.gain.value = 0.12;
-
-                preSpatialBus.connect(convBpf);
-                convBpf.connect(convolver);
-                convolver.connect(convWetGain);
-
-                const spatialBus = audioCtx.createGain();
-                merger.connect(spatialBus);
-                convWetGain.connect(spatialBus);
-
-                // STAGE 6: Dolby Multi-Knee Dynamics Leveler & Compressor
-                const compressor = audioCtx.createDynamicsCompressor();
-                compressor.threshold.value = -16;
-                compressor.knee.value = 18;
-                compressor.ratio.value = 3.4;
-                compressor.attack.value = 0.003;
-                compressor.release.value = 0.18;
-
-                const makeupGain = audioCtx.createGain();
-                makeupGain.gain.value = 1.15;
-
-                // STAGE 7: True-Peak Soft Clipper Limiter (0 dBFS Guard)
-                const limiterShaper = audioCtx.createWaveShaper();
-                limiterShaper.curve = generateSoftSaturationCurve(1024, 1.05);
-                limiterShaper.oversample = '4x';
-
-                spatialBus.connect(compressor);
-                compressor.connect(makeupGain);
-                makeupGain.connect(limiterShaper);
-                limiterShaper.connect(wetGain);
-                wetGain.connect(masterOutGainNode);
-
-                connectedMedia = media;
-                dspNodes = {
-                    dryGain,
-                    wetGain,
-                    hpFilter,
-                    subBassFilter,
-                    upperBassFilter,
-                    deMudFilter,
-                    vocalFilter,
-                    presenceFilter,
-                    airFilter,
-                    exciterLpf,
-                    exciterShaper,
-                    exciterBpf,
-                    exciterGain,
-                    preSpatialBus,
-                    splitter,
-                    midGainL,
-                    midGainR,
-                    midBus,
-                    sideGainL,
-                    sideGainR,
-                    sideBusRaw,
-                    sideHpf,
-                    sideWidthGain,
-                    merger,
-                    midToL,
-                    midToR,
-                    sideToL,
-                    sideToR,
-                    convolver,
-                    convBpf,
-                    convWetGain,
-                    spatialBus,
-                    compressor,
-                    makeupGain,
-                    limiterShaper
-                };
-            }
-
-            return true;
-        } catch (_) {
-            return false;
-        }
-    }
-
-    function updateDolbyDspParameters() {
-        try {
-            const cfg = currentAudioSettings;
-            if (!cfg.dolbyEnabled && !dspNodes) {
-                return;
-            }
-
-            if (!ensureDolbyAudioGraph() || !dspNodes || !audioCtx) {
-                return;
-            }
-
-            const now = audioCtx.currentTime;
-            const tc = 0.035;
-
-            if (!cfg.dolbyEnabled) {
-                dspNodes.dryGain.gain.setTargetAtTime(1.0, now, tc);
-                dspNodes.wetGain.gain.setTargetAtTime(0.0, now, tc);
-                return;
-            }
-
-            const isLaptop = cfg.dolbyDeviceMode === 'LaptopSpeakers';
-            const preset = cfg.dolbyPreset || 'Music';
-            const sNorm = Math.max(0, Math.min(100, Number(cfg.surroundLevel) ?? 70)) / 100.0;
-            const bNorm = Math.max(0, Math.min(100, Number(cfg.bassLevel) ?? 68)) / 100.0;
-            const cNorm = Math.max(0, Math.min(100, Number(cfg.clarityLevel) ?? 65)) / 100.0;
-
-            let presetSub = 1.0;
-            let presetPunch = 1.0;
-            let presetDeMud = 1.0;
-            let presetVocal = 1.0;
-            let presetPresence = 1.0;
-            let presetAir = 1.0;
-            let presetWidth = 1.0;
-            let presetBinaural = 1.0;
-
-            switch (preset) {
-                case 'Cinema':
-                    presetWidth = 1.35;
-                    presetBinaural = 1.45;
-                    presetSub = 1.25;
-                    presetPunch = 1.15;
-                    presetVocal = 1.25;
-                    presetDeMud = 1.2;
-                    presetPresence = 1.2;
-                    presetAir = 1.15;
-                    break;
-                case 'BassBoost':
-                    presetWidth = 1.05;
-                    presetBinaural = 0.85;
-                    presetSub = 1.55;
-                    presetPunch = 1.40;
-                    presetVocal = 0.95;
-                    presetDeMud = 0.8;
-                    presetPresence = 0.95;
-                    presetAir = 0.95;
-                    break;
-                case 'Vocal':
-                    presetWidth = 0.95;
-                    presetBinaural = 0.9;
-                    presetSub = 0.6;
-                    presetPunch = 0.75;
-                    presetVocal = 1.6;
-                    presetDeMud = 1.4;
-                    presetPresence = 1.35;
-                    presetAir = 1.2;
-                    break;
-                case 'Dynamic':
-                    presetWidth = 1.2;
-                    presetBinaural = 1.2;
-                    presetSub = 1.25;
-                    presetPunch = 1.25;
-                    presetVocal = 1.2;
-                    presetDeMud = 1.15;
-                    presetPresence = 1.25;
-                    presetAir = 1.25;
-                    break;
-                default: // 'Music'
-                    presetWidth = 1.12;
-                    presetBinaural = 1.05;
-                    presetSub = 1.15;
-                    presetPunch = 1.12;
-                    presetVocal = 1.1;
-                    presetDeMud = 1.05;
-                    presetPresence = 1.1;
-                    presetAir = 1.1;
-                    break;
-            }
-
-            const hpFreq = isLaptop ? 82 : 22;
-            dspNodes.hpFilter.frequency.setTargetAtTime(hpFreq, now, tc);
-
-            const subGainDb = isLaptop ? 0.5 : (bNorm * 7.5 * presetSub);
-            const punchGainDb = isLaptop
-                ? (bNorm * 5.8 * presetPunch)
-                : (bNorm * 4.6 * presetPunch);
-
-            dspNodes.subBassFilter.gain.setTargetAtTime(subGainDb, now, tc);
-            dspNodes.upperBassFilter.gain.setTargetAtTime(punchGainDb, now, tc);
-
-            const deMudCutDb = -(1.2 + (cNorm * 1.4 * presetDeMud));
-            dspNodes.deMudFilter.gain.setTargetAtTime(deMudCutDb, now, tc);
-
-            const vocalGainDb = (cNorm * 4.6 * presetVocal) + (isLaptop ? 1.5 : 0.0);
-            const presenceGainDb = cNorm * 3.6 * presetPresence;
-            const airGainDb = cNorm * 4.2 * presetAir;
-
-            dspNodes.vocalFilter.gain.setTargetAtTime(vocalGainDb, now, tc);
-            dspNodes.presenceFilter.gain.setTargetAtTime(presenceGainDb, now, tc);
-            dspNodes.airFilter.gain.setTargetAtTime(airGainDb, now, tc);
-
-            const exciterLevel = isLaptop
-                ? (0.15 + (bNorm * 0.45))
-                : (bNorm * 0.28);
-            dspNodes.exciterGain.gain.setTargetAtTime(exciterLevel, now, tc);
-
-            const sideWidth = 1.0 + (sNorm * 1.35 * presetWidth);
-            dspNodes.sideWidthGain.gain.setTargetAtTime(sideWidth, now, tc);
-
-            const binauralLevel = isLaptop
-                ? (sNorm * 0.12 * presetBinaural)
-                : (0.05 + (sNorm * 0.22 * presetBinaural));
-            dspNodes.convWetGain.gain.setTargetAtTime(binauralLevel, now, tc);
-
-            dspNodes.compressor.threshold.setTargetAtTime(isLaptop ? -18 : -15, now, tc);
-            dspNodes.compressor.ratio.setTargetAtTime(isLaptop ? 4.2 : 3.4, now, tc);
-            dspNodes.makeupGain.gain.setTargetAtTime(isLaptop ? 1.20 : 1.14, now, tc);
-
-            dspNodes.dryGain.gain.setTargetAtTime(0.0, now, tc);
-            dspNodes.wetGain.gain.setTargetAtTime(1.0, now, tc);
-        } catch (_) { }
-    }
-
-    window.addEventListener('click', () => {
-        if (audioCtx && audioCtx.state === 'suspended') {
-            audioCtx.resume().catch(() => { });
-        }
-    }, { passive: true });
-
-    setInterval(() => {
-        if (currentAudioSettings.dolbyEnabled) {
-            const media = getActiveMediaElement();
-            if (media && media !== connectedMedia) {
-                updateDolbyDspParameters();
-            } else if (audioCtx && audioCtx.state === 'suspended' && media && !media.paused) {
-                audioCtx.resume().catch(() => { });
-            }
-        }
-    }, 1500);
 
     const desktopController = {
         playPause: function () {
@@ -1503,7 +1104,10 @@
         applyAudioSettings: function (settings) {
             if (!settings || typeof settings !== 'object') return;
             currentAudioSettings = Object.assign({}, currentAudioSettings, settings);
-            updateDolbyDspParameters();
+            const media = getActiveMediaElement();
+            if (media) {
+                ensureNormalAudioPlayback(media);
+            }
         },
         forceSkipAd: function () {
             handleActiveAdsAndPrompts(true);
